@@ -12,3 +12,7 @@ Integrantes:
 ## Requisitos
 
 Escrito en el requirements.txt, programado en python 3.12.1
+Instalar la dependencia automáticas
+```
+pip install -r requirements.txt
+```
