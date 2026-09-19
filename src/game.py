@@ -29,9 +29,21 @@ class Game:
         self.clock = pygame.time.Clock()
         self.running = True
         self.w, self.h = SCREEN_WIDTH, SCREEN_HEIGHT
-        self._restart()
 
-    def _restart(self):
+        self.state = "MENU"
+        self.menu_index = 0
+        self.menu_rects = []
+        self.menu_msg = ""
+        self.menu_msg_end = 0
+        self.menu_options = [
+            ("1 JUGADOR", self._new_game),
+            ("MULTIJUGADOR LOCAL", self._menu_note),
+            ("MULTIJUGADOR REMOTO", self._menu_note),
+            ("CONFIGURACION", self._menu_note),
+            ("SALIR", self._quit_game),
+        ]
+
+    def _new_game(self):
         self.deck = Deck()
         self.deck.shuffle()
         self.center_card = self.deck.draw_card()
@@ -46,6 +58,16 @@ class Game:
         self.message_end = 0
         self.center_card_pos = (0, 0)
         self.player_card_pos = (0, 0)
+        self.state = "PLAYING"
+
+    def _menu_note(self):
+        labels = [opt[0] for opt in self.menu_options]
+        name = labels[self.menu_index]
+        self.menu_msg = f"{name}: proximamente en desarrollo"
+        self.menu_msg_end = pygame.time.get_ticks() + 2000
+
+    def _quit_game(self):
+        self.running = False
 
     def run(self):
         while self.running:
@@ -66,13 +88,36 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self.handle_click(event.pos)
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r and self.game_over:
-                    self._restart()
+                self.handle_key(event.key)
+
+    def handle_key(self, key):
+        if self.state == "MENU":
+            if key in (pygame.K_UP, pygame.K_w):
+                self.menu_index = (self.menu_index - 1) % len(self.menu_options)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.menu_index = (self.menu_index + 1) % len(self.menu_options)
+            elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
+                _, callback = self.menu_options[self.menu_index]
+                callback()
+            elif key == pygame.K_ESCAPE:
+                self.running = False
+        elif key == pygame.K_ESCAPE:
+            self.state = "MENU"
+        elif key == pygame.K_r and self.game_over:
+            self._new_game()
 
     def update(self):
         pass
 
     def handle_click(self, pos):
+        if self.state == "MENU":
+            for index, rect in enumerate(self.menu_rects):
+                if rect.collidepoint(pos):
+                    self.menu_index = index
+                    _, callback = self.menu_options[index]
+                    callback()
+                    return
+            return
         if self.game_over:
             return
         player = self.players[0]
@@ -123,6 +168,56 @@ class Game:
 
     def render(self):
         screen = self.screen
+        if self.state == "MENU":
+            self._render_menu(screen)
+        else:
+            self._render_game(screen)
+        pygame.display.flip()
+
+    def _render_menu(self, screen):
+        screen.fill(BG_COLOR)
+        title_font = load_font(FONT_SIZE_TITLE)
+        subtitle_font = load_font(18)
+        label_font = load_font(FONT_SIZE_MENU)
+        hint_font = load_font(16)
+        msg_font = load_font(FONT_SIZE_SMALL)
+
+        center_x = self.w // 2
+
+        title = title_font.render("DOBBLE", True, ACCENT_PRIMARY)
+        screen.blit(title, title.get_rect(center=(center_x, 120)))
+
+        subtitle = subtitle_font.render("Encuentra el simbolo comun", True, TEXT_SECONDARY)
+        screen.blit(subtitle, subtitle.get_rect(center=(center_x, 170)))
+
+        option_h = label_font.get_height() + 24
+        start_y = self.h // 2 - (option_h * len(self.menu_options)) // 2 + 30
+
+        self.menu_rects = []
+        for index, (label, _) in enumerate(self.menu_options):
+            selected = index == self.menu_index
+            color = ACCENT_PRIMARY if selected else TEXT_SECONDARY
+            rendered = label_font.render(label, True, color)
+            rect = rendered.get_rect(center=(center_x, start_y + index * option_h))
+            if selected:
+                padding = rendered.get_rect().inflate(40, 16)
+                padding.center = rect.center
+                pygame.draw.rect(screen, BG_PANEL, padding, border_radius=8)
+                pygame.draw.rect(screen, ACCENT_PRIMARY, padding, 2, border_radius=8)
+                screen.blit(rendered, rect)
+            else:
+                screen.blit(rendered, rect)
+            self.menu_rects.append(rect)
+
+        hints = "Arriba/Abajo o W/S: mover   Enter/Espacio: elegir   Esc: salir"
+        hint = hint_font.render(hints, True, TEXT_MUTED)
+        screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
+
+        if self.menu_msg and pygame.time.get_ticks() < self.menu_msg_end:
+            msg = msg_font.render(self.menu_msg, True, ACCENT_WARNING)
+            screen.blit(msg, msg.get_rect(center=(center_x, self.h - 90)))
+
+    def _render_game(self, screen):
         screen.fill(BG_COLOR)
         self._draw_stats_panel(screen)
         if self.center_card:
@@ -194,7 +289,7 @@ class Game:
             f"Correctas: {player.correct}",
             f"Fallos: {player.incorrect}",
             f"Precision: {precision:.1f}%",
-            "Pulsa R para reiniciar",
+            "R: reiniciar   Esc: menu",
         ]
         font = load_font(26)
         line_h = font.get_height() + 8
