@@ -658,6 +658,14 @@ class Game:
         return _KEY_LABEL_SHORTHAND.get(key.lower().replace(" ", ""), value)
 
     def _render_fitting_text(self, text, sizes, max_w, color):
+        # --- AJUSTE DE FUENTE ---
+        # `sizes` es una lista de tamaños de fuente, de mayor a menor,
+        # que se prueban en orden: se usa el primer tamaño cuyo texto
+        # quepa dentro de `max_w` píxeles de ancho (y no se dibuja nada
+        # más grande). Cadena arriba = texto más gordo; cadena abajo =
+        # texto más fino pero legible. Reduce la lista si quieres menos
+        # escalones (p. ej. [38, 30, 22]) o agranda `max_w` para dar
+        # más margen antes de recortar el texto con "…".
         for size in sizes:
             font = load_font(size)
             if font.size(text)[0] <= max_w:

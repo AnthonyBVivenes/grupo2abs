@@ -39,9 +39,14 @@ FONT_FALLBACKS = ["ubuntumono", "liberationmono", "notomono", "freemono"]
 FONT_PATH_04B30 = os.path.join(os.path.dirname(__file__), '..', 'assets', 'fonts', '04b_30.ttf')
 
 # Tamaños de fuente base
+# ---------------------------------------------------------------------------
+# TAMANOS DE FUENTE — ajusta aqui el tamano base de cada zona del juego.
+# Estos valores se cargan via load_font(FONT_SIZE_*) en game.py; si un texto
+# no cabe en su caja, game.py lo reduce automaticamente con _render_fitting_text.
+# ---------------------------------------------------------------------------
 FONT_SIZE_TITLE = 64
 FONT_SIZE_MENU = 38
-FONT_SIZE_GAME = 26
+FONT_SIZE_GAME = 26    # Texto principal del juego / cartas
 FONT_SIZE_SMALL = 20
 FONT_SIZE_DEBUG = 14
 FONT_SIZE_MESSAGE = 36  # Mensajes de feedback (más pequeño)
