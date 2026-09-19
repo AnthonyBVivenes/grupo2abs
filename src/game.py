@@ -3,7 +3,9 @@ import sys
 
 import pygame
 
+from card import Card
 from constants import *
+from config import Config
 from deck import Deck
 from player import Player
 
@@ -24,12 +26,13 @@ def load_font(size, bold=False):
 P1_KEYS = ["Q", "W", "E", "R", "A", "S", "D", "F"]
 P2_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8"]
 INPUT_LOCK_MS = 300
+SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
 
 
 class Game:
     def __init__(self):
-        flags = pygame.RESIZABLE if WINDOW_RESIZABLE else 0
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
+        self.config = Config()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), self._window_flags())
         pygame.display.set_caption("Dobble")
         self.clock = pygame.time.Clock()
         self.running = True
@@ -44,9 +47,53 @@ class Game:
             ("1 JUGADOR", self._new_game),
             ("MULTIJUGADOR LOCAL", self._new_local_game),
             ("MULTIJUGADOR REMOTO", self._menu_note),
-            ("CONFIGURACION", self._menu_note),
+            ("CONFIGURACION", self._open_settings),
             ("SALIR", self._quit_game),
         ]
+
+        self.settings_index = 0
+        self.settings_rects = []
+        self.editing = None
+        self.settings_rows = [
+            {"label": "Duracion de partida", "type": "choice", "key": "time_limit",
+             "values": [0, 30, 60, 90], "labels": ["Sin limite", "30s", "60s", "90s"]},
+            {"label": "Tamano de cartas", "type": "choice", "key": "card_scale",
+             "values": ["small", "normal", "large"], "labels": ["Pequena", "Normal", "Grande"],
+             "apply": self._apply_card_scale},
+            {"label": "Pista al fallar", "type": "choice", "key": "hint_on_error",
+             "values": [False, True], "labels": ["No", "Si"]},
+            {"label": "Penalizacion por fallo", "type": "choice", "key": "miss_penalty",
+             "values": ["none", "light", "strong"], "labels": ["Ninguna", "Leve", "Fuerte"]},
+            {"label": "Nombre Jugador 1", "type": "text", "key": "player_names", "index": 0},
+            {"label": "Nombre Jugador 2", "type": "text", "key": "player_names", "index": 1},
+            {"label": "Pantalla completa", "type": "choice", "key": "fullscreen",
+             "values": [False, True], "labels": ["Ventana", "Pantalla completa"],
+             "apply": self._apply_fullscreen},
+            {"label": "Pausa tras acierto", "type": "choice", "key": "input_lock_ms",
+             "values": [150, 300, 500], "labels": ["0.15s", "0.30s", "0.50s"]},
+        ]
+
+    def _window_flags(self):
+        flags = pygame.RESIZABLE if WINDOW_RESIZABLE else 0
+        if self.config["fullscreen"]:
+            flags |= pygame.FULLSCREEN
+        return flags
+
+    def _apply_fullscreen(self):
+        try:
+            self.screen = pygame.display.set_mode(self.screen.get_size(), self._window_flags())
+        except pygame.error:
+            self.config["fullscreen"] = False
+            self.screen = pygame.display.set_mode((self.w, self.h),
+                                                  pygame.RESIZABLE if WINDOW_RESIZABLE else 0)
+
+    def _apply_card_scale(self):
+        Card.set_layout(symbol_size=SYMBOL_SIZES.get(self.config["card_scale"], 50))
+
+    def _open_settings(self):
+        self.state = "SETTINGS"
+        self.settings_index = 0
+        self.editing = None
 
     def _reset_state(self):
         self.game_over = False
@@ -55,18 +102,25 @@ class Game:
         self.message_end = 0
         self.feedback = []
         self.game_start = pygame.time.get_ticks()
-        self.time_left = float(GAME_TIME_LIMIT)
+        self.time_left = float(self.config["time_limit"] if self.config["time_limit"] else 0)
         self.center_card_pos = (0, 0)
         self.player_positions = [(0, 0) for _ in self.players]
         self.lock_until = 0
         self.state = "PLAYING"
 
+    def _names(self):
+        names = list(self.config["player_names"])
+        while len(names) < 2:
+            names.append(f"Jugador {len(names) + 1}")
+        return names
+
     def _new_game(self):
         self.mode = "single"
+        self._apply_card_scale()
         self.deck = Deck()
         self.deck.shuffle()
         self.center_card = self.deck.draw_card()
-        self.players = [Player("Jugador 1", is_human=True)]
+        self.players = [Player(self._names()[0], is_human=True)]
         self.players[0].color = PLAYER1_COLOR
         for player in self.players:
             card = self.deck.draw_card()
@@ -76,12 +130,14 @@ class Game:
 
     def _new_local_game(self):
         self.mode = "local"
+        self._apply_card_scale()
         self.deck = Deck()
         self.deck.shuffle()
         self.center_card = self.deck.draw_card()
+        names = self._names()
         self.players = [
-            Player("Jugador 1", is_human=True),
-            Player("Jugador 2", is_human=True),
+            Player(names[0], is_human=True),
+            Player(names[1], is_human=True),
         ]
         self.players[0].color = PLAYER1_COLOR
         self.players[1].color = PLAYER2_COLOR
@@ -121,13 +177,16 @@ class Game:
                 self.running = False
             elif event.type == pygame.VIDEORESIZE:
                 self.w, self.h = event.w, event.h
-                self.screen = pygame.display.set_mode((self.w, self.h), pygame.RESIZABLE)
+                self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self.handle_click(event.pos)
             elif event.type == pygame.KEYDOWN:
                 self.handle_key(event.key)
 
     def handle_key(self, key):
+        if self.state == "SETTINGS":
+            self._handle_settings_key(key)
+            return
         if self.state == "MENU":
             if key in (pygame.K_UP, pygame.K_w):
                 self.menu_index = (self.menu_index - 1) % len(self.menu_options)
@@ -144,6 +203,61 @@ class Game:
             self._restart_game()
         elif self.state == "PLAYING" and self.mode == "local" and not self.game_over:
             self._handle_local_input(pygame.key.name(key))
+
+    def _handle_settings_key(self, key):
+        rows = self.settings_rows
+        if self.editing is not None:
+            row = rows[self.settings_index]
+            if key == pygame.K_ESCAPE or key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.editing = None
+            elif key == pygame.K_BACKSPACE:
+                names = list(self.config["player_names"])
+                current = names[row["index"]][:-1]
+                names[row["index"]] = current
+                self.config["player_names"] = names
+                self.config.save()
+            else:
+                name = pygame.key.name(key)
+                if len(name) == 1 and name.isprintable():
+                    names = list(self.config["player_names"])
+                    current = names[row["index"]]
+                    if len(current) < 12:
+                        names[row["index"]] = current + name
+                        self.config["player_names"] = names
+                        self.config.save()
+            return
+
+        if key in (pygame.K_UP, pygame.K_w):
+            self.settings_index = (self.settings_index - 1) % len(rows)
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.settings_index = (self.settings_index + 1) % len(rows)
+        elif key in (pygame.K_LEFT, pygame.K_a):
+            self._change_setting(-1)
+        elif key in (pygame.K_RIGHT, pygame.K_d):
+            self._change_setting(1)
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            row = rows[self.settings_index]
+            if row["type"] == "text":
+                self.editing = row["key"]
+        elif key == pygame.K_ESCAPE:
+            self.state = "MENU"
+
+    def _change_setting(self, delta):
+        row = self.settings_rows[self.settings_index]
+        if row["type"] != "choice":
+            return
+        values = row["values"]
+        current = self.config[row["key"]]
+        try:
+            idx = values.index(current)
+        except ValueError:
+            idx = 0
+        idx = (idx + delta) % len(values)
+        self.config[row["key"]] = values[idx]
+        apply = row.get("apply")
+        if apply:
+            apply()
+        self.config.save()
 
     def _handle_local_input(self, key_name):
         if not key_name:
@@ -169,12 +283,20 @@ class Game:
 
     def update(self):
         if self.state == "PLAYING" and not self.game_over:
-            elapsed = (pygame.time.get_ticks() - self.game_start) / 1000
-            self.time_left = max(0.0, GAME_TIME_LIMIT - elapsed)
-            if self.time_left <= 0:
-                self._end_game()
+            limit = self.config["time_limit"]
+            if limit > 0:
+                elapsed = (pygame.time.get_ticks() - self.game_start) / 1000
+                self.time_left = max(0.0, limit - elapsed)
+                if self.time_left <= 0:
+                    self._end_game()
 
     def handle_click(self, pos):
+        if self.state == "SETTINGS":
+            for index, rect in enumerate(self.settings_rects):
+                if rect.collidepoint(pos):
+                    self.settings_index = index
+                    return
+            return
         if self.state == "MENU":
             for index, rect in enumerate(self.menu_rects):
                 if rect.collidepoint(pos):
@@ -229,24 +351,29 @@ class Game:
         if replacement:
             player.add_card(replacement)
         if self.mode == "local":
-            self.lock_until = pygame.time.get_ticks() + INPUT_LOCK_MS
+            self.lock_until = pygame.time.get_ticks() + self.config["input_lock_ms"]
             self.show_message(f"{player.name}: acerto!", player.color)
         else:
             self.show_message("Coincidencia!", ACCENT_SUCCESS)
 
     def _on_incorrect(self, player, index=0, pos=(0, 0)):
-        player.incorrect += 1
+        penalty = self.config["miss_penalty"]
+        if penalty != "none":
+            player.incorrect += 1
+            if penalty == "strong" and player.score > 0:
+                player.score -= 1
         self._add_feedback("incorrect", pos)
-        card = player.hand[0]
-        if card:
-            p_idx = self.players.index(player)
-            if p_idx < len(self.player_positions):
-                px, py = self.player_positions[p_idx]
-                for sym, rel in zip(card.symbols, card._symbol_positions):
-                    if sym in self.center_card.symbols:
-                        hint_pos = (px + rel[0], py + rel[1])
-                        self._add_feedback("hint", hint_pos)
-                        break
+        if self.config["hint_on_error"]:
+            card = player.hand[0]
+            if card:
+                p_idx = self.players.index(player)
+                if p_idx < len(self.player_positions):
+                    px, py = self.player_positions[p_idx]
+                    for sym, rel in zip(card.symbols, card._symbol_positions):
+                        if sym in self.center_card.symbols:
+                            hint_pos = (px + rel[0], py + rel[1])
+                            self._add_feedback("hint", hint_pos)
+                            break
         if self.mode == "local":
             self.show_message(f"{player.name}: no coincide!", ACCENT_ERROR)
         else:
@@ -267,9 +394,76 @@ class Game:
         screen = self.screen
         if self.state == "MENU":
             self._render_menu(screen)
+        elif self.state == "SETTINGS":
+            self._render_settings(screen)
         else:
             self._render_game(screen)
         pygame.display.flip()
+
+    def _render_settings(self, screen):
+        screen.fill(BG_COLOR)
+        title_font = load_font(FONT_SIZE_TITLE)
+        label_font = load_font(22)
+        value_font = load_font(FONT_SIZE_MENU)
+        hint_font = load_font(16)
+
+        center_x = self.w // 2
+
+        title = title_font.render("CONFIGURACION", True, ACCENT_PRIMARY)
+        screen.blit(title, title.get_rect(center=(center_x, 80)))
+
+        row_h = value_font.get_height() + 26
+        start_y = 150
+
+        self.settings_rects = []
+        for index, row in enumerate(self.settings_rows):
+            selected = index == self.settings_index
+            label_color = TEXT_SECONDARY
+            rendered_label = label_font.render(row["label"], True, label_color)
+
+            if row["type"] == "text":
+                names = self.config["player_names"]
+                value = str(names[row["index"]])
+                if self.editing is not None and index == self.settings_index:
+                    if (pygame.time.get_ticks() // 500) % 2 == 0:
+                        value += "_"
+                    value_color = ACCENT_WARNING
+                else:
+                    value_color = TEXT_PRIMARY
+            else:
+                values = row["values"]
+                labels = row["labels"]
+                try:
+                    idx = values.index(self.config[row["key"]])
+                except ValueError:
+                    idx = 0
+                value = labels[idx]
+                value_color = ACCENT_PRIMARY
+
+            label_rect = rendered_label.get_rect(
+                midleft=(center_x - 240, start_y + index * row_h))
+
+            row_bg = pygame.Rect(center_x - 270, start_y + index * row_h - row_h // 2,
+                                 540, row_h)
+            if selected:
+                pygame.draw.rect(screen, BG_PANEL, row_bg, border_radius=10)
+                pygame.draw.rect(screen, ACCENT_PRIMARY, row_bg, 2, border_radius=10)
+
+            screen.blit(rendered_label, label_rect)
+
+            rendered_value = value_font.render(value, True, value_color)
+            value_rect = rendered_value.get_rect(
+                midright=(center_x + 240, start_y + index * row_h))
+            screen.blit(rendered_value, value_rect)
+
+            self.settings_rects.append(row_bg)
+
+        if self.editing is not None:
+            hints = "Escribiendo nombre...  Enter/Esc: terminar"
+        else:
+            hints = "Arriba/Abajo o W/S: mover   Izq/Der o A/D: cambiar   Enter: editar nombre   Esc: volver"
+        hint = hint_font.render(hints, True, TEXT_MUTED)
+        screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
 
     def _render_menu(self, screen):
         screen.fill(BG_COLOR)
@@ -351,7 +545,7 @@ class Game:
         pygame.display.flip()
 
     def _draw_timer(self, screen):
-        if self.time_left <= 0:
+        if self.config["time_limit"] <= 0 or self.time_left <= 0:
             return
         seconds = int(self.time_left)
         text = f"{seconds // 60:02d}:{seconds % 60:02d}"
@@ -381,7 +575,7 @@ class Game:
         bar_y = rect.bottom + 8
         bar = pygame.Rect(bar_x, bar_y, bar_w, 8)
         pygame.draw.rect(screen, BG_PANEL, bar, border_radius=4)
-        ratio = max(0.0, min(1.0, self.time_left / GAME_TIME_LIMIT))
+        ratio = max(0.0, min(1.0, self.time_left / self.config["time_limit"]))
         fill = pygame.Rect(bar_x, bar_y, int(bar_w * ratio), 8)
         pygame.draw.rect(screen, color, fill, border_radius=4)
         pygame.draw.rect(screen, BORDER, bar, 1, border_radius=4)

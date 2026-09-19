@@ -1,0 +1,12 @@
+{
+  "time_limit": 60,
+  "card_scale": "normal",
+  "hint_on_error": true,
+  "miss_penalty": "light",
+  "player_names": [
+    "Jugador 1",
+    "Jugador 2"
+  ],
+  "fullscreen": false,
+  "input_lock_ms": 300
+}
