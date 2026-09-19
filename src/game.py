@@ -58,6 +58,11 @@ class Game:
         self.settings_rects = []
         self.editing = None
         self.editing_step = 0
+        self.modal = None
+        self.modal_btn_rects = []
+        self._name_index = 0
+        self._name_before = None
+        self._keys_backup = None
         self.settings_key_msg = ""
         self.settings_key_msg_end = 0
         self.settings_rows = [
@@ -108,6 +113,10 @@ class Game:
         self.settings_index = 0
         self.editing = None
         self.editing_step = 0
+        self.modal = None
+        self.modal_btn_rects = []
+        self._name_index = 0
+        self._name_before = None
         self._keys_backup = None
         self.settings_key_msg = ""
         self.settings_key_msg_end = 0
@@ -225,36 +234,37 @@ class Game:
 
     def _handle_settings_key(self, key):
         rows = self.settings_rows
-        row = rows[self.settings_index]
 
-        if self.editing in ("p1_keys", "p2_keys"):
+        if self.modal == "keys":
             if key == pygame.K_ESCAPE:
                 self._cancel_key_edit()
             elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                pass
+                self._accept_key_edit()
             else:
                 self._assign_key(pygame.key.name(key))
             return
 
-        if self.editing is not None:
-            if key == pygame.K_ESCAPE or key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                self.editing = None
+        if self.modal == "name":
+            if key == pygame.K_ESCAPE:
+                self._cancel_name_edit()
+            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._accept_name_edit()
             elif key == pygame.K_BACKSPACE:
                 names = list(self.config["player_names"])
-                current = names[row["index"]][:-1]
-                names[row["index"]] = current
+                current = names[self._name_index][:-1]
+                names[self._name_index] = current
                 self.config["player_names"] = names
-                self.config.save()
             else:
                 name = pygame.key.name(key)
                 if len(name) == 1 and name.isprintable():
                     names = list(self.config["player_names"])
-                    current = names[row["index"]]
+                    current = names[self._name_index]
                     if len(current) < 12:
-                        names[row["index"]] = current + name
+                        names[self._name_index] = current + name
                         self.config["player_names"] = names
-                        self.config.save()
             return
+
+        row = rows[self.settings_index]
 
         if key in (pygame.K_UP, pygame.K_w):
             self.settings_index = (self.settings_index - 1) % len(rows)
@@ -266,9 +276,13 @@ class Game:
             self._change_setting(1)
         elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             if row["type"] == "text":
-                self.editing = row["key"]
+                self.editing = "player_names"
+                self.modal = "name"
+                self._name_index = row["index"]
+                self._name_before = list(self.config["player_names"])
             elif row["type"] == "keys":
                 self.editing = row["key"]
+                self.modal = "keys"
                 self.editing_step = 0
                 self._keys_backup = list(self.config[row["key"]])
                 self.config[row["key"]] = list(self.config[row["key"]])
@@ -295,17 +309,52 @@ class Game:
         self.config[key_name] = keys
         self.editing_step += 1
         if self.editing_step >= 8:
-            self.editing = None
-            self.editing_step = 0
-            self.config.save()
+            self._accept_key_edit()
+
+    def _accept_key_edit(self):
+        self.config.save()
+        self.modal = None
+        self.editing = None
+        self.editing_step = 0
+        self._keys_backup = None
 
     def _cancel_key_edit(self):
         key_name = self.editing
-        if hasattr(self, "_keys_backup"):
+        if self._keys_backup is not None:
             self.config[key_name] = self._keys_backup
+        self.modal = None
         self.editing = None
         self.editing_step = 0
         self.settings_key_msg = ""
+        self._keys_backup = None
+
+    def _accept_name_edit(self):
+        self.config.save()
+        self.modal = None
+        self.editing = None
+        self._name_before = None
+
+    def _cancel_name_edit(self):
+        if self._name_before is not None:
+            self.config["player_names"] = self._name_before
+        self.modal = None
+        self.editing = None
+        self._name_before = None
+
+    def _handle_modal_click(self, pos):
+        for action, rect in self.modal_btn_rects:
+            if rect.collidepoint(pos):
+                if self.modal == "name":
+                    if action == "accept":
+                        self._accept_name_edit()
+                    else:
+                        self._cancel_name_edit()
+                elif self.modal == "keys":
+                    if action == "accept":
+                        self._accept_key_edit()
+                    else:
+                        self._cancel_key_edit()
+                break
 
     def _change_setting(self, delta):
         row = self.settings_rows[self.settings_index]
@@ -357,6 +406,9 @@ class Game:
 
     def handle_click(self, pos):
         if self.state == "SETTINGS":
+            if self.modal is not None:
+                self._handle_modal_click(pos)
+                return
             for index, rect in enumerate(self.settings_rects):
                 if rect.collidepoint(pos):
                     self.settings_index = index
@@ -466,6 +518,25 @@ class Game:
         pygame.display.flip()
 
     def _render_settings(self, screen):
+        if self.modal is not None:
+            surface = pygame.Surface((self.w, self.h))
+            self._draw_settings_screen(surface)
+            screen.blit(self._blur_backdrop(surface), (0, 0))
+            self._draw_modal(screen)
+        else:
+            self._draw_settings_screen(screen)
+
+    def _blur_backdrop(self, surface):
+        w, h = surface.get_size()
+        small = pygame.transform.smoothscale(
+            surface, (max(1, w // 8), max(1, h // 8)))
+        blurred = pygame.transform.smoothscale(small, (w, h))
+        veil = pygame.Surface((w, h), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 130))
+        blurred.blit(veil, (0, 0))
+        return blurred
+
+    def _draw_settings_screen(self, screen):
         screen.fill(BG_COLOR)
         title_font = load_font(FONT_SIZE_TITLE)
         label_font = load_font(22)
@@ -473,6 +544,7 @@ class Game:
         hint_font = load_font(16)
 
         center_x = self.w // 2
+        editing = self.modal is None and self.editing
 
         title = title_font.render("CONFIGURACION", True, ACCENT_PRIMARY)
         screen.blit(title, title.get_rect(center=(center_x, 80)))
@@ -489,7 +561,7 @@ class Game:
             if row["type"] == "text":
                 names = self.config["player_names"]
                 value = str(names[row["index"]])
-                if self.editing is not None and index == self.settings_index:
+                if editing is not None and index == self.settings_index:
                     if (pygame.time.get_ticks() // 500) % 2 == 0:
                         value += "_"
                     value_color = ACCENT_WARNING
@@ -500,12 +572,12 @@ class Game:
                 parts = []
                 for i, k in enumerate(keys):
                     show = k.upper() if k else "-"
-                    if self.editing == row["key"] and i == self.editing_step:
+                    if editing == row["key"] and i == self.editing_step:
                         cursor = "_" if (pygame.time.get_ticks() // 500) % 2 == 0 else " "
                         show += cursor
                     parts.append(show)
                 value = "  ".join(parts)
-                value_color = ACCENT_WARNING if self.editing == row["key"] else ACCENT_PRIMARY
+                value_color = ACCENT_WARNING if editing == row["key"] else ACCENT_PRIMARY
             else:
                 values = row["values"]
                 labels = row["labels"]
@@ -534,21 +606,117 @@ class Game:
 
             self.settings_rects.append(row_bg)
 
-        if self.editing in ("p1_keys", "p2_keys"):
-            pos = self.editing_step + 1
-            player_num = 1 if self.editing == "p1_keys" else 2
-            hints = f"Jugador {player_num} - tecla {pos}/8: pulsa una tecla   Esc: cancelar"
-        elif self.editing is not None:
-            hints = "Escribiendo nombre...  Enter/Esc: terminar"
-        else:
-            hints = "Arriba/Abajo o W/S: mover   Izq/Der o A/D: cambiar   Enter: editar nombre o teclas   Esc: volver"
+        hints = "Arriba/Abajo o W/S: mover   Izq/Der o A/D: cambiar   Enter: editar nombre o teclas   Esc: volver"
         hint = hint_font.render(hints, True, TEXT_MUTED)
         screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
 
+    def _draw_modal(self, screen):
+        if self.modal == "name":
+            self._draw_modal_name(screen)
+        elif self.modal == "keys":
+            self._draw_modal_keys(screen)
+
+    def _draw_modal_panel(self, screen, w, h):
+        rect = pygame.Rect((self.w - w) // 2, (self.h - h) // 2, w, h)
+        pygame.draw.rect(screen, BG_PANEL, rect, border_radius=16)
+        pygame.draw.rect(screen, ACCENT_PRIMARY, rect, 3, border_radius=16)
+        return rect
+
+    def _draw_modal_buttons(self, screen, panel, labels=("Cancelar", "Aceptar")):
+        self.modal_btn_rects = []
+        btn_w, btn_h = 150, 46
+        gap = 24
+        total = btn_w * 2 + gap
+        x0 = panel.centerx - total // 2
+        by = panel.bottom - btn_h - 18
+        actions = ("cancel", "accept")
+        for i, (label, action) in enumerate(zip(labels, actions)):
+            rect = pygame.Rect(x0 + i * (btn_w + gap), by, btn_w, btn_h)
+            border = ACCENT_ERROR if action == "cancel" else ACCENT_SUCCESS
+            pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=10)
+            pygame.draw.rect(screen, border, rect, 2, border_radius=10)
+            font = load_font(FONT_SIZE_GAME)
+            label_surf = font.render(label, True, TEXT_PRIMARY)
+            screen.blit(label_surf, label_surf.get_rect(center=rect.center))
+            self.modal_btn_rects.append((action, rect))
+
+    def _draw_modal_keys(self, screen):
+        panel = self._draw_modal_panel(screen, 620, 350)
+        title_font = load_font(30)
+        hint_font = load_font(16)
+        player_num = 1 if self.editing == "p1_keys" else 2
+        title = title_font.render(f"Teclas Jugador {player_num}", True, ACCENT_PRIMARY)
+        screen.blit(title, title.get_rect(center=(panel.centerx, panel.top + 38)))
+
+        keys = self.config[self.editing]
+        cell = 68
+        top_y = panel.top + 88
+        rows_layout = [
+            (0, [-cell, 0, cell]),
+            (1, [-cell // 2, cell // 2]),
+            (2, [-cell, 0, cell]),
+        ]
+        blink = (pygame.time.get_ticks() // 500) % 2 == 0
+        slot_counter = 0
+        for row_idx, cols in rows_layout:
+            y = top_y + row_idx * (cell + 14)
+            for cx_off in cols:
+                rect = pygame.Rect(0, 0, cell, cell)
+                rect.center = (panel.centerx + cx_off, y)
+                pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=12)
+                border = BORDER
+                if slot_counter == self.editing_step:
+                    border = ACCENT_WARNING if blink else ACCENT_PRIMARY
+                pygame.draw.rect(screen, border, rect,
+                                 3 if slot_counter == self.editing_step else 2,
+                                 border_radius=12)
+                key = keys[slot_counter]
+                font = load_font(28)
+                key_surf = font.render(key.upper() if key else "-", True, TEXT_PRIMARY)
+                screen.blit(key_surf, key_surf.get_rect(center=rect.center))
+                slot_counter += 1
+
+        pos = self.editing_step + 1
+        progress = hint_font.render(
+            f"Tecla {pos}/8: pulsa una tecla para asignarla", True, ACCENT_WARNING)
+        screen.blit(progress, progress.get_rect(center=(panel.centerx, panel.top + 252)))
+
         if self.settings_key_msg and pygame.time.get_ticks() < self.settings_key_msg_end:
-            msg_color = ACCENT_ERROR
-            rendered_msg = hint_font.render(self.settings_key_msg, True, msg_color)
-            screen.blit(rendered_msg, rendered_msg.get_rect(center=(center_x, self.h - 26)))
+            msg = hint_font.render(self.settings_key_msg, True, ACCENT_ERROR)
+            screen.blit(msg, msg.get_rect(center=(panel.centerx, panel.top + 276)))
+
+        esc_note = hint_font.render("Esc: cancelar   Enter: aceptar", True, TEXT_MUTED)
+        screen.blit(esc_note, esc_note.get_rect(center=(panel.centerx, panel.bottom - 70)))
+
+        self._draw_modal_buttons(screen, panel)
+
+    def _draw_modal_name(self, screen):
+        panel = self._draw_modal_panel(screen, 560, 250)
+        title_font = load_font(30)
+        name_font = load_font(FONT_SIZE_MESSAGE)
+        hint_font = load_font(16)
+        player_num = self._name_index + 1
+        title = title_font.render(f"Nombre Jugador {player_num}", True, ACCENT_PRIMARY)
+        screen.blit(title, title.get_rect(center=(panel.centerx, panel.top + 40)))
+
+        name = self.config["player_names"][self._name_index]
+        if (pygame.time.get_ticks() // 500) % 2 == 0:
+            name += "_"
+        label = "Escribe el nombre:"
+        label_surf = hint_font.render(label, True, TEXT_SECONDARY)
+        screen.blit(label_surf, label_surf.get_rect(center=(panel.centerx, panel.top + 92)))
+
+        name_surf = name_font.render(name, True, ACCENT_WARNING)
+        text_rect = name_surf.get_rect(center=(panel.centerx, panel.top + 138))
+        box = text_rect.inflate(40, 18)
+        pygame.draw.rect(screen, BG_SECONDARY, box, border_radius=10)
+        pygame.draw.rect(screen, BORDER, box, 2, border_radius=10)
+        screen.blit(name_surf, text_rect)
+
+        hint = hint_font.render("Enter: aceptar   Esc: cancelar", True, TEXT_MUTED)
+        screen.blit(hint, hint.get_rect(center=(panel.centerx, panel.bottom - 62)))
+
+        self._draw_modal_buttons(screen, panel)
 
     def _render_menu(self, screen):
         screen.fill(BG_COLOR)
