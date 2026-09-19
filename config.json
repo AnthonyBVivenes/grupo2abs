@@ -1,0 +1,12 @@
+{
+  "time_limit": 60,
+  "card_scale": "small",
+  "hint_on_error": true,
+  "miss_penalty": "strong",
+  "player_names": [
+    "alex",
+    "otro"
+  ],
+  "fullscreen": false,
+  "input_lock_ms": 150
+}
