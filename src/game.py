@@ -56,6 +56,7 @@ class Game:
         self.message = ""
         self.message_color = TEXT_PRIMARY
         self.message_end = 0
+        self.feedback = []
         self.center_card_pos = (0, 0)
         self.player_card_pos = (0, 0)
         self.state = "PLAYING"
@@ -128,15 +129,26 @@ class Game:
         if px <= pos[0] <= px + CARD_WIDTH and py <= pos[1] <= py + CARD_HEIGHT:
             hit = card.get_symbol_at_pos(pos[0] - px, pos[1] - py)
             if hit:
-                sym, _ = hit
+                sym, index = hit
+                rel_x, rel_y, _ = card._symbol_positions[index]
+                click_pos = (px + rel_x, py + rel_y)
                 if sym in self.center_card.symbols:
-                    self._on_correct(player, card)
+                    self._on_correct(player, card, index, click_pos)
                 else:
-                    self._on_incorrect(player)
+                    self._on_incorrect(player, index, click_pos)
 
-    def _on_correct(self, player, card):
+    def _add_feedback(self, kind, pos):
+        self.feedback.append({
+            "kind": kind,
+            "pos": pos,
+            "start": pygame.time.get_ticks(),
+            "duration": 900,
+        })
+
+    def _on_correct(self, player, card, index=0, pos=(0, 0)):
         player.score += 1
         player.correct += 1
+        self._add_feedback("correct", pos)
         player.remove_card(card)
         next_center = self.deck.draw_card()
         if next_center is None:
@@ -151,8 +163,17 @@ class Game:
             player.add_card(replacement)
         self.show_message("Coincidencia!", ACCENT_SUCCESS)
 
-    def _on_incorrect(self, player):
+    def _on_incorrect(self, player, index=0, pos=(0, 0)):
         player.incorrect += 1
+        self._add_feedback("incorrect", pos)
+        card = player.hand[0]
+        if card:
+            for sym, rel in zip(card.symbols, card._symbol_positions):
+                if sym in self.center_card.symbols:
+                    px, py = self.player_card_pos
+                    hint_pos = (px + rel[0], py + rel[1])
+                    self._add_feedback("hint", hint_pos)
+                    break
         self.show_message("No coincide!", ACCENT_ERROR)
 
     def _end_game(self):
@@ -231,6 +252,7 @@ class Game:
                 py = cy + CARD_HEIGHT + 70
                 self.player_card_pos = (cx, py)
                 self.players[0].hand[0].draw(screen, cx, py)
+        self._draw_feedback(screen)
         self._draw_message(screen)
         if self.game_over:
             self._draw_game_over(screen)
@@ -272,12 +294,92 @@ class Game:
         center_text(screen, "Mazo", 296, label_font, TEXT_SECONDARY)
         center_text(screen, str(self.deck.remaining()), 320, value_font, TEXT_PRIMARY)
 
+    def _draw_feedback(self, screen):
+        if not self.feedback:
+            return
+        now = pygame.time.get_ticks()
+        active = []
+        for fb in self.feedback:
+            t = (now - fb["start"]) / fb["duration"]
+            if t < 1.0:
+                active.append((fb, t))
+        self.feedback = [fb for fb, _ in active]
+        if not active:
+            return
+
+        glow = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        for fb, t in active:
+            kind = fb["kind"]
+            color = ACCENT_SUCCESS if kind in ("correct", "hint") else ACCENT_ERROR
+            x, y = fb["pos"]
+            radius = SYMBOL_SIZE // 2 + int((SYMBOL_SIZE + 24) * t)
+            alpha = int(255 * (1 - t))
+            width = max(3, int(7 * (1 - t)) + 2)
+
+            inner = int(SYMBOL_SIZE // 2 * (0.5 + 0.5 * t))
+            pygame.draw.circle(glow, (color[0], color[1], color[2], 70), (x, y), inner)
+
+            if kind in ("correct", "incorrect"):
+                pygame.draw.circle(glow, (color[0], color[1], color[2], alpha), (x, y), radius, width)
+                ring2_r = int(radius * 0.6)
+                pygame.draw.circle(glow, (color[0], color[1], color[2], int(alpha * 0.5)), (x, y), ring2_r, max(1, width // 2))
+            else:
+                half = int(SYMBOL_SIZE * (0.4 + 0.5 * t))
+                pygame.draw.circle(glow, (color[0], color[1], color[2], alpha), (x, y), half, 4)
+        screen.blit(glow, (0, 0))
+
     def _draw_message(self, screen):
-        if self.message and pygame.time.get_ticks() < self.message_end:
-            font = load_font(FONT_SIZE_MESSAGE)
-            max_width = self.w - SCORE_PANEL_WIDTH - 40
-            my = max(40, self.h // 2 - 130)
-            self._render_wrapped_message(screen, self.message, my, max_width, font, self.message_color)
+        if not self.message or self.game_over:
+            return
+        now = pygame.time.get_ticks()
+        if now >= self.message_end:
+            return
+        font = load_font(FONT_SIZE_MESSAGE)
+
+        gap_top = self.center_card_pos[1] + CARD_HEIGHT
+        gap_bottom = self.player_card_pos[1]
+        if gap_bottom <= gap_top:
+            gap_top = 80
+            gap_bottom = self.h - 80
+        my = (gap_top + gap_bottom) // 2
+
+        max_width = self.w - SCORE_PANEL_WIDTH - 60
+        lines = []
+        current = ""
+        for word in self.message.split():
+            test = current + " " + word if current else word
+            if font.size(test)[0] <= max_width:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+
+        line_h = font.get_height() + 6
+        height = line_h * len(lines)
+        width = max(font.size(line)[0] for line in lines) + 40
+        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
+
+        fade = 1.0
+        remaining = self.message_end - now
+        if remaining < 350:
+            fade = remaining / 350
+
+        banner = pygame.Surface((width, height), pygame.SRCALPHA)
+        bg_alpha = int(200 * fade)
+        pygame.draw.rect(banner, (*BG_COLOR, bg_alpha), banner.get_rect(), border_radius=12)
+        pygame.draw.rect(banner, (*self.message_color, int(220 * fade)),
+                         banner.get_rect(), 3, border_radius=12)
+
+        start_y = height // 2 - (line_h * (len(lines) - 1)) // 2
+        for i, line in enumerate(lines):
+            rendered = font.render(line, True, self.message_color)
+            rect = rendered.get_rect(center=(banner.get_width() // 2, start_y + i * line_h))
+            banner.blit(rendered, rect)
+
+        screen.blit(banner, banner.get_rect(center=(center_x, my)))
 
     def _draw_game_over(self, screen):
         player = self.players[0]
@@ -302,25 +404,3 @@ class Game:
             rendered = font.render(line, True, color)
             rect = rendered.get_rect(center=(center_x, start_y + i * line_h))
             screen.blit(rendered, rect)
-
-    def _render_wrapped_message(self, surface, text, y, max_width, font, color):
-        words = text.split()
-        lines = []
-        current = ""
-        for word in words:
-            test = current + " " + word if current else word
-            if font.size(test)[0] <= max_width:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-        line_h = font.get_height() + 6
-        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
-        start_y = y - (line_h * (len(lines) - 1)) // 2
-        for i, line in enumerate(lines):
-            rendered = font.render(line, True, color)
-            rect = rendered.get_rect(center=(center_x, start_y + i * line_h))
-            surface.blit(rendered, rect)
