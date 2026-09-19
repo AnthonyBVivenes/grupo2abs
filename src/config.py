@@ -12,6 +12,8 @@ DEFAULT_CONFIG = {
     "player_names": ["Jugador 1", "Jugador 2"],
     "fullscreen": False,
     "input_lock_ms": 300,
+    "p1_keys": ["Q", "W", "E", "R", "A", "S", "D", "F"],
+    "p2_keys": ["1", "2", "3", "4", "5", "6", "7", "8"],
 }
 
 

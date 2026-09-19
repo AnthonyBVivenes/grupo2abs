@@ -5,7 +5,7 @@ import pygame
 
 from card import Card
 from constants import *
-from config import Config
+from config import Config, DEFAULT_CONFIG
 from deck import Deck
 from player import Player
 
@@ -23,8 +23,8 @@ def load_font(size, bold=False):
     return pygame.font.Font(None, size)
 
 
-P1_KEYS = ["Q", "W", "E", "R", "A", "S", "D", "F"]
-P2_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8"]
+P1_KEYS = list(DEFAULT_CONFIG["p1_keys"])
+P2_KEYS = list(DEFAULT_CONFIG["p2_keys"])
 INPUT_LOCK_MS = 300
 SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
 
@@ -57,6 +57,9 @@ class Game:
         self.settings_index = 0
         self.settings_rects = []
         self.editing = None
+        self.editing_step = 0
+        self.settings_key_msg = ""
+        self.settings_key_msg_end = 0
         self.settings_rows = [
             {"label": "Duracion de partida", "type": "choice", "key": "time_limit",
              "values": [0, 30, 60, 90], "labels": ["Sin limite", "30s", "60s", "90s"]},
@@ -69,6 +72,8 @@ class Game:
              "values": ["none", "light", "strong"], "labels": ["Ninguna", "Leve", "Fuerte"]},
             {"label": "Nombre Jugador 1", "type": "text", "key": "player_names", "index": 0},
             {"label": "Nombre Jugador 2", "type": "text", "key": "player_names", "index": 1},
+            {"label": "Teclas Jugador 1", "type": "keys", "key": "p1_keys"},
+            {"label": "Teclas Jugador 2", "type": "keys", "key": "p2_keys"},
             {"label": "Pantalla completa", "type": "choice", "key": "fullscreen",
              "values": [False, True], "labels": ["Ventana", "Pantalla completa"],
              "apply": self._apply_fullscreen},
@@ -102,6 +107,10 @@ class Game:
         self.state = "SETTINGS"
         self.settings_index = 0
         self.editing = None
+        self.editing_step = 0
+        self._keys_backup = None
+        self.settings_key_msg = ""
+        self.settings_key_msg_end = 0
 
     def _reset_state(self):
         self.game_over = False
@@ -216,8 +225,18 @@ class Game:
 
     def _handle_settings_key(self, key):
         rows = self.settings_rows
+        row = rows[self.settings_index]
+
+        if self.editing in ("p1_keys", "p2_keys"):
+            if key == pygame.K_ESCAPE:
+                self._cancel_key_edit()
+            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                pass
+            else:
+                self._assign_key(pygame.key.name(key))
+            return
+
         if self.editing is not None:
-            row = rows[self.settings_index]
             if key == pygame.K_ESCAPE or key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.editing = None
             elif key == pygame.K_BACKSPACE:
@@ -246,11 +265,47 @@ class Game:
         elif key in (pygame.K_RIGHT, pygame.K_d):
             self._change_setting(1)
         elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            row = rows[self.settings_index]
             if row["type"] == "text":
                 self.editing = row["key"]
+            elif row["type"] == "keys":
+                self.editing = row["key"]
+                self.editing_step = 0
+                self._keys_backup = list(self.config[row["key"]])
+                self.config[row["key"]] = list(self.config[row["key"]])
         elif key == pygame.K_ESCAPE:
             self.state = "MENU"
+
+    def _other_player_keys(self, key_name):
+        other = "p2_keys" if key_name == "p1_keys" else "p1_keys"
+        return [k.upper() for k in self.config[other] if k]
+
+    def _assign_key(self, coded_name):
+        row = self.settings_rows[self.settings_index]
+        key_name = row["key"]
+        new_key = coded_name.upper() if coded_name else ""
+        if not new_key:
+            return
+        keys = self.config[key_name]
+        bound = [k.upper() for k in keys[:self.editing_step] if k]
+        if (new_key in bound or new_key in self._other_player_keys(key_name)):
+            self.settings_key_msg = "Tecla ya usada"
+            self.settings_key_msg_end = pygame.time.get_ticks() + 1800
+            return
+        keys[self.editing_step] = new_key
+        self.config[key_name] = keys
+        self.editing_step += 1
+        if self.editing_step >= 8:
+            self.editing = None
+            self.editing_step = 0
+            self.config.save()
+
+    def _cancel_key_edit(self):
+        key_name = self.editing
+        if hasattr(self, "_keys_backup"):
+            self.config[key_name] = self._keys_backup
+        self.editing = None
+        self.editing_step = 0
+        self.settings_key_msg = ""
 
     def _change_setting(self, delta):
         row = self.settings_rows[self.settings_index]
@@ -440,6 +495,17 @@ class Game:
                     value_color = ACCENT_WARNING
                 else:
                     value_color = TEXT_PRIMARY
+            elif row["type"] == "keys":
+                keys = list(self.config[row["key"]])
+                parts = []
+                for i, k in enumerate(keys):
+                    show = k.upper() if k else "-"
+                    if self.editing == row["key"] and i == self.editing_step:
+                        cursor = "_" if (pygame.time.get_ticks() // 500) % 2 == 0 else " "
+                        show += cursor
+                    parts.append(show)
+                value = "  ".join(parts)
+                value_color = ACCENT_WARNING if self.editing == row["key"] else ACCENT_PRIMARY
             else:
                 values = row["values"]
                 labels = row["labels"]
@@ -468,12 +534,21 @@ class Game:
 
             self.settings_rects.append(row_bg)
 
-        if self.editing is not None:
+        if self.editing in ("p1_keys", "p2_keys"):
+            pos = self.editing_step + 1
+            player_num = 1 if self.editing == "p1_keys" else 2
+            hints = f"Jugador {player_num} - tecla {pos}/8: pulsa una tecla   Esc: cancelar"
+        elif self.editing is not None:
             hints = "Escribiendo nombre...  Enter/Esc: terminar"
         else:
-            hints = "Arriba/Abajo o W/S: mover   Izq/Der o A/D: cambiar   Enter: editar nombre   Esc: volver"
+            hints = "Arriba/Abajo o W/S: mover   Izq/Der o A/D: cambiar   Enter: editar nombre o teclas   Esc: volver"
         hint = hint_font.render(hints, True, TEXT_MUTED)
         screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
+
+        if self.settings_key_msg and pygame.time.get_ticks() < self.settings_key_msg_end:
+            msg_color = ACCENT_ERROR
+            rendered_msg = hint_font.render(self.settings_key_msg, True, msg_color)
+            screen.blit(rendered_msg, rendered_msg.get_rect(center=(center_x, self.h - 26)))
 
     def _render_menu(self, screen):
         screen.fill(BG_COLOR)
@@ -543,7 +618,7 @@ class Game:
                 if player.hand and p_idx < len(self.player_positions):
                     card = player.hand[0]
                     if self.mode == "local":
-                        card.set_key_labels(P1_KEYS if p_idx == 0 else P2_KEYS)
+                        card.set_key_labels(self.config["p1_keys"] if p_idx == 0 else self.config["p2_keys"])
                     else:
                         card.set_key_labels([])
                     px, pyy = self.player_positions[p_idx]
