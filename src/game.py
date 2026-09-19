@@ -32,11 +32,14 @@ SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
 class Game:
     def __init__(self):
         self.config = Config()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), self._window_flags())
+        self.w, self.h = SCREEN_WIDTH, SCREEN_HEIGHT
+        self.windowed_size = (SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
         pygame.display.set_caption("Dobble")
         self.clock = pygame.time.Clock()
         self.running = True
-        self.w, self.h = SCREEN_WIDTH, SCREEN_HEIGHT
+        if self.config["fullscreen"]:
+            self._apply_fullscreen()
 
         self.state = "MENU"
         self.menu_index = 0
@@ -81,11 +84,16 @@ class Game:
 
     def _apply_fullscreen(self):
         try:
-            self.screen = pygame.display.set_mode(self.screen.get_size(), self._window_flags())
+            self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
         except pygame.error:
-            self.config["fullscreen"] = False
-            self.screen = pygame.display.set_mode((self.w, self.h),
-                                                  pygame.RESIZABLE if WINDOW_RESIZABLE else 0)
+            self.config["fullscreen"] = not self.config["fullscreen"]
+            self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
+            return
+        if self.config["fullscreen"]:
+            self.windowed_size = (self.w, self.h)
+            self.w, self.h = self.screen.get_size()
+        else:
+            self.w, self.h = self.windowed_size
 
     def _apply_card_scale(self):
         Card.set_layout(symbol_size=SYMBOL_SIZES.get(self.config["card_scale"], 50))
@@ -176,8 +184,10 @@ class Game:
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.VIDEORESIZE:
-                self.w, self.h = event.w, event.h
-                self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
+                if not self.config["fullscreen"]:
+                    self.w, self.h = event.w, event.h
+                    self.windowed_size = (self.w, self.h)
+                    self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self.handle_click(event.pos)
             elif event.type == pygame.KEYDOWN:
@@ -404,7 +414,7 @@ class Game:
         screen.fill(BG_COLOR)
         title_font = load_font(FONT_SIZE_TITLE)
         label_font = load_font(22)
-        value_font = load_font(FONT_SIZE_MENU)
+        value_font = load_font(FONT_SIZE_GAME)
         hint_font = load_font(16)
 
         center_x = self.w // 2
