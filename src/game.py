@@ -57,6 +57,8 @@ class Game:
         self.message_color = TEXT_PRIMARY
         self.message_end = 0
         self.feedback = []
+        self.game_start = pygame.time.get_ticks()
+        self.time_left = float(GAME_TIME_LIMIT)
         self.center_card_pos = (0, 0)
         self.player_card_pos = (0, 0)
         self.state = "PLAYING"
@@ -108,7 +110,11 @@ class Game:
             self._new_game()
 
     def update(self):
-        pass
+        if self.state == "PLAYING" and not self.game_over:
+            elapsed = (pygame.time.get_ticks() - self.game_start) / 1000
+            self.time_left = max(0.0, GAME_TIME_LIMIT - elapsed)
+            if self.time_left <= 0:
+                self._end_game()
 
     def handle_click(self, pos):
         if self.state == "MENU":
@@ -241,6 +247,7 @@ class Game:
     def _render_game(self, screen):
         screen.fill(BG_COLOR)
         self._draw_stats_panel(screen)
+        self._draw_timer(screen)
         if self.center_card:
             play_left = SCORE_PANEL_WIDTH
             play_w = self.w - play_left
@@ -257,6 +264,42 @@ class Game:
         if self.game_over:
             self._draw_game_over(screen)
         pygame.display.flip()
+
+    def _draw_timer(self, screen):
+        if self.time_left <= 0:
+            return
+        seconds = int(self.time_left)
+        text = f"{seconds // 60:02d}:{seconds % 60:02d}"
+        font = load_font(30)
+
+        if self.time_left <= 5 and (pygame.time.get_ticks() // 500) % 2 == 0:
+            color = ACCENT_ERROR
+        elif self.time_left <= 10:
+            color = ACCENT_ERROR
+        elif self.time_left <= 15:
+            color = ACCENT_WARNING
+        else:
+            color = TEXT_PRIMARY
+
+        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
+        rendered = font.render(text, True, color)
+        rect = rendered.get_rect(center=(center_x, 34))
+
+        banner = rendered.get_rect().inflate(24, 12)
+        banner.center = rect.center
+        pygame.draw.rect(screen, BG_PANEL, banner, border_radius=8)
+        pygame.draw.rect(screen, color, banner, 2, border_radius=8)
+        screen.blit(rendered, rect)
+
+        bar_w = 180
+        bar_x = center_x - bar_w // 2
+        bar_y = rect.bottom + 8
+        bar = pygame.Rect(bar_x, bar_y, bar_w, 8)
+        pygame.draw.rect(screen, BG_PANEL, bar, border_radius=4)
+        ratio = max(0.0, min(1.0, self.time_left / GAME_TIME_LIMIT))
+        fill = pygame.Rect(bar_x, bar_y, int(bar_w * ratio), 8)
+        pygame.draw.rect(screen, color, fill, border_radius=4)
+        pygame.draw.rect(screen, BORDER, bar, 1, border_radius=4)
 
     def _draw_stats_panel(self, screen):
         panel = pygame.Rect(0, 0, SCORE_PANEL_WIDTH, self.h)

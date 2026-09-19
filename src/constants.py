@@ -82,6 +82,9 @@ PLAYER2_BG = (107, 38, 67)   # Fondo jugador 2 - MID_PURPLE
 MESSAGE_Y = SCREEN_HEIGHT // 2 - 100  # Mensaje feedback más arriba
 SCORE_PANEL_WIDTH = 220
 
+# Temporizador de partida (1 jugador) en segundos
+GAME_TIME_LIMIT = 60
+
 TOTAL_SYMBOLS = 57
 SYMBOLS_PER_CARD = 8
 
