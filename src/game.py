@@ -21,6 +21,11 @@ def load_font(size, bold=False):
     return pygame.font.Font(None, size)
 
 
+P1_KEYS = ["Q", "W", "E", "R", "A", "S", "D", "F"]
+P2_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8"]
+INPUT_LOCK_MS = 300
+
+
 class Game:
     def __init__(self):
         flags = pygame.RESIZABLE if WINDOW_RESIZABLE else 0
@@ -37,21 +42,13 @@ class Game:
         self.menu_msg_end = 0
         self.menu_options = [
             ("1 JUGADOR", self._new_game),
-            ("MULTIJUGADOR LOCAL", self._menu_note),
+            ("MULTIJUGADOR LOCAL", self._new_local_game),
             ("MULTIJUGADOR REMOTO", self._menu_note),
             ("CONFIGURACION", self._menu_note),
             ("SALIR", self._quit_game),
         ]
 
-    def _new_game(self):
-        self.deck = Deck()
-        self.deck.shuffle()
-        self.center_card = self.deck.draw_card()
-        self.players = [Player("Jugador 1", is_human=True)]
-        for player in self.players:
-            card = self.deck.draw_card()
-            if card:
-                player.add_card(card)
+    def _reset_state(self):
         self.game_over = False
         self.message = ""
         self.message_color = TEXT_PRIMARY
@@ -60,8 +57,45 @@ class Game:
         self.game_start = pygame.time.get_ticks()
         self.time_left = float(GAME_TIME_LIMIT)
         self.center_card_pos = (0, 0)
-        self.player_card_pos = (0, 0)
+        self.player_positions = [(0, 0) for _ in self.players]
+        self.lock_until = 0
         self.state = "PLAYING"
+
+    def _new_game(self):
+        self.mode = "single"
+        self.deck = Deck()
+        self.deck.shuffle()
+        self.center_card = self.deck.draw_card()
+        self.players = [Player("Jugador 1", is_human=True)]
+        self.players[0].color = PLAYER1_COLOR
+        for player in self.players:
+            card = self.deck.draw_card()
+            if card:
+                player.add_card(card)
+        self._reset_state()
+
+    def _new_local_game(self):
+        self.mode = "local"
+        self.deck = Deck()
+        self.deck.shuffle()
+        self.center_card = self.deck.draw_card()
+        self.players = [
+            Player("Jugador 1", is_human=True),
+            Player("Jugador 2", is_human=True),
+        ]
+        self.players[0].color = PLAYER1_COLOR
+        self.players[1].color = PLAYER2_COLOR
+        for player in self.players:
+            card = self.deck.draw_card()
+            if card:
+                player.add_card(card)
+        self._reset_state()
+
+    def _restart_game(self):
+        if self.mode == "local":
+            self._new_local_game()
+        else:
+            self._new_game()
 
     def _menu_note(self):
         labels = [opt[0] for opt in self.menu_options]
@@ -107,7 +141,31 @@ class Game:
         elif key == pygame.K_ESCAPE:
             self.state = "MENU"
         elif key == pygame.K_r and self.game_over:
-            self._new_game()
+            self._restart_game()
+        elif self.state == "PLAYING" and self.mode == "local" and not self.game_over:
+            self._handle_local_input(pygame.key.name(key))
+
+    def _handle_local_input(self, key_name):
+        if not key_name:
+            return
+        key_name = key_name.upper()
+        if pygame.time.get_ticks() < self.lock_until:
+            return
+        for p_idx, player in enumerate(self.players):
+            if not player.hand:
+                continue
+            card = player.hand[0]
+            hit = card.get_symbol_by_key(key_name)
+            if hit:
+                sym, index = hit
+                rel_x, rel_y, _ = card._symbol_positions[index]
+                px, py = self.player_positions[p_idx]
+                pos = (px + rel_x, py + rel_y)
+                if sym in self.center_card.symbols:
+                    self._on_correct(player, card, index, pos)
+                else:
+                    self._on_incorrect(player, index, pos)
+                return
 
     def update(self):
         if self.state == "PLAYING" and not self.game_over:
@@ -127,21 +185,24 @@ class Game:
             return
         if self.game_over:
             return
-        player = self.players[0]
-        if not player.hand:
+        if self.mode == "local" and pygame.time.get_ticks() < self.lock_until:
             return
-        card = player.hand[0]
-        px, py = self.player_card_pos
-        if px <= pos[0] <= px + CARD_WIDTH and py <= pos[1] <= py + CARD_HEIGHT:
-            hit = card.get_symbol_at_pos(pos[0] - px, pos[1] - py)
-            if hit:
-                sym, index = hit
-                rel_x, rel_y, _ = card._symbol_positions[index]
-                click_pos = (px + rel_x, py + rel_y)
-                if sym in self.center_card.symbols:
-                    self._on_correct(player, card, index, click_pos)
-                else:
-                    self._on_incorrect(player, index, click_pos)
+        for p_idx, player in enumerate(self.players):
+            if not player.hand:
+                continue
+            card = player.hand[0]
+            px, py = self.player_positions[p_idx]
+            if px <= pos[0] <= px + CARD_WIDTH and py <= pos[1] <= py + CARD_HEIGHT:
+                hit = card.get_symbol_at_pos(pos[0] - px, pos[1] - py)
+                if hit:
+                    sym, index = hit
+                    rel_x, rel_y, _ = card._symbol_positions[index]
+                    click_pos = (px + rel_x, py + rel_y)
+                    if sym in self.center_card.symbols:
+                        self._on_correct(player, card, index, click_pos)
+                    else:
+                        self._on_incorrect(player, index, click_pos)
+                return
 
     def _add_feedback(self, kind, pos):
         self.feedback.append({
@@ -167,20 +228,29 @@ class Game:
         replacement = self.deck.draw_card()
         if replacement:
             player.add_card(replacement)
-        self.show_message("Coincidencia!", ACCENT_SUCCESS)
+        if self.mode == "local":
+            self.lock_until = pygame.time.get_ticks() + INPUT_LOCK_MS
+            self.show_message(f"{player.name}: acerto!", player.color)
+        else:
+            self.show_message("Coincidencia!", ACCENT_SUCCESS)
 
     def _on_incorrect(self, player, index=0, pos=(0, 0)):
         player.incorrect += 1
         self._add_feedback("incorrect", pos)
         card = player.hand[0]
         if card:
-            for sym, rel in zip(card.symbols, card._symbol_positions):
-                if sym in self.center_card.symbols:
-                    px, py = self.player_card_pos
-                    hint_pos = (px + rel[0], py + rel[1])
-                    self._add_feedback("hint", hint_pos)
-                    break
-        self.show_message("No coincide!", ACCENT_ERROR)
+            p_idx = self.players.index(player)
+            if p_idx < len(self.player_positions):
+                px, py = self.player_positions[p_idx]
+                for sym, rel in zip(card.symbols, card._symbol_positions):
+                    if sym in self.center_card.symbols:
+                        hint_pos = (px + rel[0], py + rel[1])
+                        self._add_feedback("hint", hint_pos)
+                        break
+        if self.mode == "local":
+            self.show_message(f"{player.name}: no coincide!", ACCENT_ERROR)
+        else:
+            self.show_message("No coincide!", ACCENT_ERROR)
 
     def _end_game(self):
         self.game_over = True
@@ -255,10 +325,25 @@ class Game:
             cy = 70
             self.center_card_pos = (cx, cy)
             self.center_card.draw(screen, cx, cy)
-            if self.players and self.players[0].hand:
-                py = cy + CARD_HEIGHT + 70
-                self.player_card_pos = (cx, py)
-                self.players[0].hand[0].draw(screen, cx, py)
+            py = cy + CARD_HEIGHT + 70
+            if self.mode == "local":
+                left_cx = play_left + int(play_w * 0.28)
+                right_cx = play_left + int(play_w * 0.72)
+                self.player_positions = [
+                    (left_cx - CARD_WIDTH // 2, py),
+                    (right_cx - CARD_WIDTH // 2, py),
+                ]
+            else:
+                self.player_positions = [(cx, py)]
+            for p_idx, player in enumerate(self.players):
+                if player.hand and p_idx < len(self.player_positions):
+                    card = player.hand[0]
+                    if self.mode == "local":
+                        card.set_key_labels(P1_KEYS if p_idx == 0 else P2_KEYS)
+                    else:
+                        card.set_key_labels([])
+                    px, pyy = self.player_positions[p_idx]
+                    card.draw(screen, px, pyy)
         self._draw_feedback(screen)
         self._draw_message(screen)
         if self.game_over:
@@ -320,6 +405,25 @@ class Game:
 
         center_text(screen, "DOBBLE", 30, title_font, ACCENT_PRIMARY)
 
+        if self.mode == "local":
+
+            def player_section(player, base_y):
+                color = player.color
+                center_text(screen, player.name, base_y, label_font, color)
+                center_text(screen, str(player.score), base_y + 32, value_font, TEXT_PRIMARY)
+                center_text(screen, "Correctas", base_y + 70, label_font, TEXT_SECONDARY)
+                center_text(screen, str(player.correct), base_y + 94, value_font, ACCENT_SUCCESS)
+                center_text(screen, "Fallos", base_y + 126, label_font, TEXT_SECONDARY)
+                center_text(screen, str(player.incorrect), base_y + 150, value_font, ACCENT_ERROR)
+                pygame.draw.line(screen, BORDER, (20, base_y + 170),
+                                 (SCORE_PANEL_WIDTH - 20, base_y + 170), 1)
+
+            player_section(self.players[0], 100)
+            player_section(self.players[1], 320)
+            center_text(screen, "Mazo", self.h - 130, label_font, TEXT_SECONDARY)
+            center_text(screen, str(self.deck.remaining()), self.h - 100, value_font, TEXT_PRIMARY)
+            return
+
         player = self.players[0]
         center_text(screen, player.name, 66, label_font, PLAYER1_COLOR)
         center_text(screen, str(player.score), 96, value_font, TEXT_PRIMARY)
@@ -380,7 +484,7 @@ class Game:
         font = load_font(FONT_SIZE_MESSAGE)
 
         gap_top = self.center_card_pos[1] + CARD_HEIGHT
-        gap_bottom = self.player_card_pos[1]
+        gap_bottom = self.player_positions[0][1] if self.player_positions else 0
         if gap_bottom <= gap_top:
             gap_top = 80
             gap_bottom = self.h - 80
@@ -425,6 +529,39 @@ class Game:
         screen.blit(banner, banner.get_rect(center=(center_x, my)))
 
     def _draw_game_over(self, screen):
+        font = load_font(26)
+        label_font = load_font(20)
+        line_h = font.get_height() + 10
+        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
+
+        if self.mode == "local":
+            max_score = max(p.score for p in self.players)
+            winners = [p for p in self.players if p.score == max_score]
+            min_fallos = min(p.incorrect for p in winners)
+            winners = [p for p in winners if p.incorrect == min_fallos]
+            if len(winners) == 1:
+                title = f"GANADOR: {winners[0].name}"
+                title_color = winners[0].color
+            else:
+                title = "EMPATE"
+                title_color = ACCENT_WARNING
+
+            lines = [f"{p.name}: {p.score} pts  (C:{p.correct}  F:{p.incorrect})"
+                     for p in self.players]
+            start_y = self.h // 2 - (line_h * (len(lines) + 1)) // 2
+
+            rendered = font.render(title, True, title_color)
+            screen.blit(rendered, rendered.get_rect(center=(center_x, start_y)))
+            for i, line in enumerate(lines):
+                text = label_font.render(line, True, TEXT_PRIMARY)
+                rect = text.get_rect(center=(center_x, start_y + (i + 1) * line_h))
+                screen.blit(text, rect)
+
+            hint_y = start_y + (len(lines) + 1) * line_h + 10
+            hint = label_font.render("R: reiniciar   Esc: menu", True, TEXT_MUTED)
+            screen.blit(hint, hint.get_rect(center=(center_x, hint_y)))
+            return
+
         player = self.players[0]
         total = player.correct + player.incorrect
         precision = (player.correct / total * 100) if total else 0.0
@@ -436,9 +573,6 @@ class Game:
             f"Precision: {precision:.1f}%",
             "R: reiniciar   Esc: menu",
         ]
-        font = load_font(26)
-        line_h = font.get_height() + 8
-        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
         start_y = self.h // 2 - (line_h * len(lines)) // 2
         for i, line in enumerate(lines):
             color = TEXT_PRIMARY
