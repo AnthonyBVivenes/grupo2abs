@@ -28,6 +28,17 @@ P2_KEYS = list(DEFAULT_CONFIG["p2_keys"])
 INPUT_LOCK_MS = 300
 SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
 
+_KEY_LABEL_SHORTHAND = {
+    "space": "SPACE", "left shift": "LSHIFT", "right shift": "RSHIFT",
+    "left ctrl": "LCTRL", "right ctrl": "RCTRL", "left alt": "LALT",
+    "right alt": "RALT", "left meta": "LMETA", "right meta": "RMETA",
+    "caps lock": "CAPS", "backspace": "BKSP", "delete": "DEL",
+    "insert": "INS", "pageup": "PGUP", "pagedown": "PGDN",
+    "home": "HOME", "end": "END", "return": "ENTER", "kpenter": "ENTER",
+    "kp0": "0", "kp1": "1", "kp2": "2", "kp3": "3", "kp4": "4",
+    "kp5": "5", "kp6": "6", "kp7": "7", "kp8": "8", "kp9": "9",
+}
+
 
 class Game:
     def __init__(self):
@@ -624,7 +635,7 @@ class Game:
 
     def _draw_modal_buttons(self, screen, panel, labels=("Cancelar", "Aceptar")):
         self.modal_btn_rects = []
-        btn_w, btn_h = 150, 46
+        btn_w, btn_h = 170, 46
         gap = 24
         total = btn_w * 2 + gap
         x0 = panel.centerx - total // 2
@@ -635,10 +646,28 @@ class Game:
             border = ACCENT_ERROR if action == "cancel" else ACCENT_SUCCESS
             pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=10)
             pygame.draw.rect(screen, border, rect, 2, border_radius=10)
-            font = load_font(FONT_SIZE_GAME)
-            label_surf = font.render(label, True, TEXT_PRIMARY)
+            font, label_surf = self._render_fitting_text(
+                label, [FONT_SIZE_GAME, 22, 19, 16], btn_w - 16, TEXT_PRIMARY)
             screen.blit(label_surf, label_surf.get_rect(center=rect.center))
             self.modal_btn_rects.append((action, rect))
+
+    def _key_display_name(self, key):
+        if not key:
+            return "-"
+        value = key.upper()
+        return _KEY_LABEL_SHORTHAND.get(key.lower().replace(" ", ""), value)
+
+    def _render_fitting_text(self, text, sizes, max_w, color):
+        for size in sizes:
+            font = load_font(size)
+            if font.size(text)[0] <= max_w:
+                return font, font.render(text, True, color)
+        remain = text
+        while len(remain) > 1:
+            remain = remain[:-1]
+            if font.size(remain)[0] <= max_w:
+                break
+        return font, font.render(remain, True, color)
 
     def _draw_modal_keys(self, screen):
         panel = self._draw_modal_panel(screen, 620, 350)
@@ -671,8 +700,9 @@ class Game:
                                  3 if slot_counter == self.editing_step else 2,
                                  border_radius=12)
                 key = keys[slot_counter]
-                font = load_font(28)
-                key_surf = font.render(key.upper() if key else "-", True, TEXT_PRIMARY)
+                label = self._key_display_name(key)
+                font, key_surf = self._render_fitting_text(
+                    label, [28, 24, 20, 16, 13], cell - 14, TEXT_PRIMARY)
                 screen.blit(key_surf, key_surf.get_rect(center=rect.center))
                 slot_counter += 1
 
