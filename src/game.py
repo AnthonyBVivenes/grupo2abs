@@ -8,12 +8,13 @@ from constants import *
 from config import Config, DEFAULT_CONFIG, normalize_key
 from deck import Deck
 from fonts import load_font
+from net import RemoteClient, RemoteHost, local_ips
 from player import Player
 from sound import SoundManager
 from ui import (
-    blit_breathing, blur_backdrop, breathe,
-    draw_modal_panel, ease_out_back, ease_out_cubic, fit_scaled,
-    key_display_name, render_fitting_text, scaled_text,
+    blit_breathing, blit_modal_shadow, blur_backdrop, breathe,
+    draw_modal_panel, draw_modal_ribbon, ease_out_back, ease_out_cubic,
+    fit_scaled, key_display_name, render_fitting_text, scaled_text,
 )
 
 
@@ -44,6 +45,8 @@ class Game:
 
         self.state = "MENU"
         self.mode = "single"
+        self.players = []
+        self.center_card = None
         self.menu_index = 0
         self.menu_rects = []
         self.menu_msg = ""
@@ -51,10 +54,26 @@ class Game:
         self.menu_options = [
             ("1 JUGADOR", self._new_game),
             ("MULTIJUGADOR LOCAL", self._new_local_game),
-            ("MULTIJUGADOR REMOTO", self._menu_note),
+            ("MULTIJUGADOR REMOTO", self._open_remote_menu),
             ("CONFIGURACION", self._open_settings),
             ("SALIR", self._quit_game),
         ]
+
+        self.remote = None
+        self.remote_role = None
+        self.remote_player = None
+        self.remote_round = 0
+        self.remote_sub = "MAIN"
+        self.remote_index = 0
+        self.remote_rects = []
+        self.remote_ip_buffer = ""
+        self.remote_opponent = ""
+        self.remote_opp_score = 0
+        self.remote_opp_correct = 0
+        self.remote_opp_incorrect = 0
+        self.remote_net_msg = ""
+        self.remote_net_msg_end = 0
+        self.remote_remaining = 0
 
         self.settings_index = 0
         self.settings_rects = []
@@ -224,14 +243,368 @@ class Game:
     def _restart_game(self):
         if self.mode == "local":
             self._new_local_game()
+        elif self.mode == "remote":
+            self._close_net()
+            self._go_to_menu()
         else:
             self._new_game()
 
-    def _menu_note(self):
-        labels = [opt[0] for opt in self.menu_options]
-        name = labels[self.menu_index]
-        self.menu_msg = f"{name}: proximamente en desarrollo"
-        self.menu_msg_end = pygame.time.get_ticks() + 2000
+    def _show_remote_msg(self, text):
+        self.remote_net_msg = text
+        self.remote_net_msg_end = pygame.time.get_ticks() + 2200
+
+    def _close_net(self):
+        if self.remote is not None:
+            self.remote.close()
+            self.remote = None
+        self.remote_role = None
+        self.remote_player = None
+
+    def _open_remote_menu(self):
+        self._close_net()
+        self.state = "REMOTE"
+        self.remote_sub = "MAIN"
+        self.remote_index = 0
+        self.remote_rects = []
+        self.remote_ip_buffer = str(self.config["remote_ip"])
+
+    def _remote_host(self):
+        self._close_net()
+        port = int(self.config["remote_port"]) or 7777
+        self.remote = RemoteHost(port)
+        self.remote_role = "host"
+        self.remote_sub = "HOST_WAIT"
+        if self.remote.error:
+            self._show_remote_msg(f"Error al abrir: {self.remote.error}")
+        self.sound.play_effect("select")
+
+    def _remote_join(self):
+        self._close_net()
+        host = self.remote_ip_buffer.strip() or self.config["remote_ip"]
+        try:
+            port = int(self.config["remote_port"]) or 7777
+        except (TypeError, ValueError):
+            port = 7777
+        self.remote = RemoteClient(host, port)
+        self.remote_role = "guest"
+        self.remote_sub = "GUEST_WAIT"
+        self.sound.play_effect("select")
+
+    def _remote_cancel(self):
+        self._close_net()
+        self.remote_sub = "MAIN"
+        self.remote_index = 0
+
+    def _handle_remote_msgs(self, msgs):
+        for msg in msgs:
+            mtype = msg.get("type")
+            if mtype == "HELLO" and self.remote_role == "host":
+                self._start_remote_game(str(msg.get("name") or "Jugador 2"))
+            elif mtype == "CLAIM" and self.remote_role == "host":
+                self._handle_remote_claim(msg)
+            elif mtype == "STATE":
+                self._apply_remote_state(msg)
+            elif mtype == "GAME_OVER":
+                self._apply_remote_game_over(msg)
+            elif mtype == "DISCONNECT":
+                self._net_abort("El oponente se desconecto")
+
+    def _poll_remote(self):
+        if self.remote is None:
+            return
+        if self.remote_role == "guest":
+            if self.remote.connected() and self.remote_sub == "GUEST_WAIT":
+                self.remote.send({"type": "HELLO", "name": self._names()[0]})
+                self.remote_sub = "GUEST_INGAME"
+        elif self.remote_role == "host":
+            if (self.remote.connected()
+                    and self.remote_sub == "HOST_WAIT"):
+                self.remote_sub = "HOST_INGAME"
+        if self.remote.connected():
+            self._handle_remote_msgs(self.remote.poll())
+
+    def _net_abort(self, reason):
+        was_remote = self.mode == "remote"
+        self._close_net()
+        if was_remote:
+            self._go_to_menu()
+            self.show_message(reason, ACCENT_ERROR)
+        else:
+            self._show_remote_msg(reason)
+
+    def _start_remote_game(self, guest_name):
+        self.mode = "remote"
+        self.remote_role = "host"
+        self.remote_round = 0
+        self._remote_game_over_sent = False
+        self._apply_card_scale()
+        self.deck = Deck()
+        self.deck.shuffle()
+        self.center_card = self.deck.draw_card()
+        guest = Player(guest_name, is_human=False)
+        guest.color = PLAYER2_COLOR
+        self.remote_player = guest
+        self.players = [Player(self._names()[0], is_human=True)]
+        self.players[0].color = PLAYER1_COLOR
+        for player in (self.players[0], guest):
+            card = self.deck.draw_card()
+            if card:
+                player.add_card(card)
+        self._reset_state()
+        self.state = "PLAYING"
+        self._send_remote_state()
+
+    def _send_remote_state(self, feedback=None):
+        if self.remote is None or self.remote_role != "host":
+            return
+        guest = self.remote_player
+        host_p = self.players[0]
+        msg = {
+            "type": "STATE",
+            "round": self.remote_round,
+            "center": list(self.center_card.symbols),
+            "hand": list(guest.hand[0].symbols) if guest.hand else [],
+            "host": host_p.name,
+            "you": guest.name,
+            "host_score": host_p.score,
+            "you_score": guest.score,
+            "host_correct": host_p.correct,
+            "host_incorrect": host_p.incorrect,
+            "you_correct": guest.correct,
+            "you_incorrect": guest.incorrect,
+            "remaining": self.deck.remaining(),
+            "time_limit": self.config["time_limit"],
+        }
+        if feedback:
+            msg["feedback"] = feedback
+        self.remote.send(msg)
+
+    def _handle_remote_claim(self, msg):
+        guest = self.remote_player
+        if guest is None or not guest.hand or not self.center_card:
+            return
+        if msg.get("round") != self.remote_round:
+            return
+        sym = msg.get("symbol")
+        if sym is None:
+            return
+        card = guest.hand[0]
+        if sym in self.center_card.symbols:
+            self._on_correct(guest, card, card.symbols.index(sym))
+        else:
+            self._on_incorrect(guest)
+
+    def _apply_remote_state(self, msg):
+        if self.remote_role != "guest":
+            return
+        self.remote_round = int(msg.get("round", 0))
+        self.center_card = Card(0, list(msg.get("center") or []))
+        hand = msg.get("hand") or []
+        player = self.players[0] if self.players else Player("", is_human=True)
+        if not self.players:
+            player.color = PLAYER1_COLOR
+            self.players = [player]
+        player.hand = [Card(0, list(hand))] if hand else []
+        player.name = msg.get("you") or player.name
+        player.score = int(msg.get("you_score", 0))
+        player.correct = int(msg.get("you_correct", 0))
+        player.incorrect = int(msg.get("you_incorrect", 0))
+        self.remote_opponent = msg.get("host") or ""
+        self.remote_opp_score = int(msg.get("host_score", 0))
+        self.remote_opp_correct = int(msg.get("host_correct", 0))
+        self.remote_opp_incorrect = int(msg.get("host_incorrect", 0))
+        self.remote_remaining = int(msg.get("remaining", 0))
+        if self.state != "PLAYING":
+            self.mode = "remote"
+            self.remote_role = "guest"
+            self._reset_state()
+            self.state = "PLAYING"
+        feedback = msg.get("feedback")
+        if feedback and feedback.get("kind") == "correct":
+            if feedback.get("who") == "you":
+                self.sound.play_effect("coincidence")
+                self.show_message("Acertaste!", ACCENT_SUCCESS)
+            elif feedback.get("who") == "host":
+                self.show_message(f"{self.remote_opponent} acerto",
+                                  self._remote_opp_color())
+        self._apply_card_scale()
+
+    def _apply_remote_game_over(self, msg):
+        if self.remote_role != "guest":
+            return
+        self.remote_opponent = msg.get("host") or self.remote_opponent
+        self.remote_opp_score = int(msg.get("host_score", 0))
+        self.remote_opp_correct = int(msg.get("host_correct", 0))
+        self.remote_opp_incorrect = int(msg.get("host_incorrect", 0))
+        self.remote_remaining = 0
+        self.remote_round = int(msg.get("round", self.remote_round))
+        player = self.players[0]
+        player.score = int(msg.get("you_score", player.score))
+        player.correct = int(msg.get("you_correct", player.correct))
+        player.incorrect = int(msg.get("you_incorrect", player.incorrect))
+        self._reset_state()
+        self.state = "PLAYING"
+        self.game_over = True
+        self.game_over_start = pygame.time.get_ticks()
+        self.game_over_rects = []
+        self._game_over_backdrop = None
+        self.message = "FIN DE PARTIDA"
+        self.message_color = ACCENT_WARNING
+        self.message_end = pygame.time.get_ticks() + 60000
+        self.sound.stop_music()
+        self.sound.play_effect("game_over")
+
+    def _guest_claim(self, sym, index, pos):
+        if self.remote is None or not self.remote.connected():
+            return
+        correct = sym in self.center_card.symbols
+        self._add_feedback("correct" if correct else "incorrect", pos)
+        if not correct:
+            self.sound.play_effect("error")
+            self.show_message("No coincide!", ACCENT_ERROR)
+        self.remote.send({"type": "CLAIM", "round": self.remote_round,
+                          "symbol": sym})
+
+    def _remote_opp_color(self):
+        return PLAYER2_COLOR
+
+    def _remote_options(self):
+        return [("Crear partida", "host"), ("Unirse a partida", "join"),
+                ("Volver", "back")]
+
+    def _activate_remote_option(self, index):
+        _, action = self._remote_options()[index]
+        if action == "host":
+            self._remote_host()
+        elif action == "join":
+            self._remote_join_sub()
+        else:
+            self._go_to_menu()
+
+    def _handle_remote_key(self, key):
+        sub = self.remote_sub
+        if sub == "MAIN":
+            options = self._remote_options()
+            if key in (pygame.K_UP, pygame.K_w):
+                self.remote_index = (self.remote_index - 1) % len(options)
+                self.sound.play_effect("navigate")
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.remote_index = (self.remote_index + 1) % len(options)
+                self.sound.play_effect("navigate")
+            elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
+                self.sound.play_effect("select")
+                self._activate_remote_option(self.remote_index)
+            elif key == pygame.K_ESCAPE:
+                self._go_to_menu()
+            return
+        if sub == "JOIN_IP":
+            if key == pygame.K_ESCAPE:
+                self.remote_sub = "MAIN"
+                self.sound.play_effect("select")
+            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.sound.play_effect("select")
+                self._remote_join()
+            elif key == pygame.K_BACKSPACE:
+                self.remote_ip_buffer = self.remote_ip_buffer[:-1]
+            else:
+                name = pygame.key.name(key)
+                if len(name) == 1 and name.isprintable() and len(self.remote_ip_buffer) < 21:
+                    self.remote_ip_buffer += name
+            return
+        if sub in ("HOST_WAIT", "HOST_INGAME", "GUEST_WAIT", "GUEST_INGAME"):
+            if key == pygame.K_ESCAPE:
+                self._remote_cancel()
+            return
+
+    def _draw_remote_menu(self, screen):
+        screen.fill(BG_COLOR)
+        title_font = load_font(FONT_SIZE_TITLE)
+        label_font = load_font(FONT_SIZE_MENU)
+        hint_font = load_font(16)
+        msg_font = load_font(FONT_SIZE_SMALL)
+        center_x = self.w // 2
+
+        _, title = render_fitting_text(
+            "MULTIJUGADOR REMOTO",
+            [FONT_SIZE_TITLE, 44, 38, 32, 28, 24, 20, 16],
+            self.w - 40, ACCENT_PRIMARY)
+        screen.blit(title, title.get_rect(center=(center_x, 120)))
+
+        sub = self.remote_sub
+        if sub == "MAIN":
+            option_h = label_font.get_height() + 24
+            options = self._remote_options()
+            start_y = self.h // 2 - (option_h * len(options)) // 2 + 30
+            self.remote_rects = []
+            for index, (label, _) in enumerate(options):
+                selected = index == self.remote_index
+                color = ACCENT_PRIMARY if selected else TEXT_SECONDARY
+                _, rendered = render_fitting_text(
+                    label, [FONT_SIZE_MENU, 32, 28, 24, 20, 16],
+                    min(int(self.w * 0.7), 700), color)
+                rect = rendered.get_rect(center=(center_x, start_y + index * option_h))
+                if selected:
+                    blit_breathing(screen, rendered, rect, breathe())
+                else:
+                    screen.blit(rendered, rect)
+                self.remote_rects.append(rect)
+            _, hint = render_fitting_text(
+                "Arriba/Abajo o W/S: mover   Enter/Espacio: elegir   Esc: volver",
+                [16, 15, 14, 13, 12, 11], self.w - 40, TEXT_MUTED)
+            screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
+        elif sub == "JOIN_IP":
+            _, label = render_fitting_text(
+                "Direccion del anfitrion (IP)",
+                [26, 24, 22, 20, 18, 16, 14], self.w - 40, TEXT_SECONDARY)
+            screen.blit(label, label.get_rect(center=(center_x, self.h // 2 - 70)))
+            box = pygame.Rect(0, 0, min(int(self.w * 0.7), 440), 58)
+            box.center = (center_x, self.h // 2)
+            pygame.draw.rect(screen, BG_SECONDARY, box, border_radius=12)
+            pygame.draw.rect(screen, ACCENT_PRIMARY, box, 3, border_radius=12)
+            cursor = "_" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+            _, ip_surf = render_fitting_text(
+                self.remote_ip_buffer + cursor,
+                [FONT_SIZE_MESSAGE, 34, 30, 26, 22, 18], box.w - 30, TEXT_PRIMARY)
+            screen.blit(ip_surf, ip_surf.get_rect(center=box.center))
+            _, hint = render_fitting_text(
+                "Enter: conectar   Esc: cancelar", [16, 15, 14, 13, 12, 11],
+                self.w - 40, TEXT_MUTED)
+            screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
+        else:
+            if self.remote is not None and self.remote.error:
+                _, err = render_fitting_text(
+                    f"Error: {self.remote.error}", [FONT_SIZE_SMALL, 18, 16, 14],
+                    self.w - 40, ACCENT_ERROR)
+                screen.blit(err, err.get_rect(center=(center_x, self.h // 2 - 60)))
+            _, wait = render_fitting_text(
+                "Esperando al oponente...",
+                [FONT_SIZE_MESSAGE, 34, 30, 26], self.w - 40, ACCENT_WARNING)
+            screen.blit(wait, wait.get_rect(center=(center_x, self.h // 2 - 20)))
+            if self.remote_role == "host":
+                ips_line = "   ".join(local_ips())
+                _, ips_surf = render_fitting_text(
+                    f"Tu IP: {ips_line}",
+                    [FONT_SIZE_SMALL, 18, 16, 14], self.w - 40, TEXT_SECONDARY)
+                screen.blit(ips_surf,
+                            ips_surf.get_rect(center=(center_x, self.h // 2 + 40)))
+                port = getattr(self.remote, "bound_port", self.config["remote_port"])
+                _, port_surf = render_fitting_text(
+                    f"Puerto: {port}", [FONT_SIZE_SMALL, 18, 16, 14],
+                    self.w - 40, TEXT_SECONDARY)
+                screen.blit(port_surf, port_surf.get_rect(center=(center_x, self.h // 2 + 70)))
+            _, hint = render_fitting_text(
+                "Esc: cancelar", [16, 15, 14, 13, 12, 11], self.w - 40, TEXT_MUTED)
+            screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
+
+        if self.remote_net_msg and pygame.time.get_ticks() < self.remote_net_msg_end:
+            _, msg = render_fitting_text(
+                self.remote_net_msg, [FONT_SIZE_SMALL, 18, 16, 14],
+                self.w - 40, ACCENT_WARNING)
+            screen.blit(msg, msg.get_rect(center=(center_x, self.h - 90)))
+
+    def _remote_join_sub(self):
+        self.remote_sub = "JOIN_IP"
+        self.remote_ip_buffer = str(self.config["remote_ip"])
 
     def _quit_game(self):
         self._request_quit()
@@ -300,6 +673,7 @@ class Game:
         sys.exit()
 
     def handle_events(self):
+        self._poll_remote()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self._request_quit()
@@ -335,6 +709,9 @@ class Game:
         if self.state == "SETTINGS":
             self._handle_settings_key(key)
             return
+        if self.state == "REMOTE":
+            self._handle_remote_key(key)
+            return
         if self.state == "MENU":
             if key in (pygame.K_UP, pygame.K_w):
                 self.menu_index = (self.menu_index - 1) % len(self.menu_options)
@@ -349,7 +726,10 @@ class Game:
             elif key == pygame.K_ESCAPE:
                 self._quit_game()
         elif key == pygame.K_ESCAPE and self.state == "PLAYING" and not self.game_over:
-            self._open_pause()
+            if self.mode == "remote":
+                self.show_message("Pausa no disponible en partida remota", TEXT_MUTED)
+            else:
+                self._open_pause()
         elif key == pygame.K_ESCAPE:
             self._go_to_menu()
         elif key == pygame.K_r and self.game_over:
@@ -392,6 +772,7 @@ class Game:
             callback()
 
     def _go_to_menu(self):
+        self._close_net()
         self.state = "MENU"
         self.game_over = False
         self.game_over_rects = []
@@ -669,6 +1050,15 @@ class Game:
                     callback()
                     return
             return
+        if self.state == "REMOTE":
+            if self.remote_sub == "MAIN":
+                for index, rect in enumerate(self.remote_rects):
+                    if rect.collidepoint(pos):
+                        self.remote_index = index
+                        self.sound.play_effect("select")
+                        self._activate_remote_option(index)
+                        return
+            return
         if self.game_over:
             for action, rect in self.game_over_rects:
                 if rect.collidepoint(pos):
@@ -694,13 +1084,17 @@ class Game:
                     sym, index = hit
                     rel_x, rel_y, _ = card._symbol_positions[index]
                     click_pos = (px + rel_x, py + rel_y)
-                    if sym in self.center_card.symbols:
+                    if self.mode == "remote" and self.remote_role == "guest":
+                        self._guest_claim(sym, index, click_pos)
+                    elif sym in self.center_card.symbols:
                         self._on_correct(player, card, index, click_pos)
                     else:
                         self._on_incorrect(player, index, click_pos)
                 return
 
     def _add_feedback(self, kind, pos):
+        if pos is None:
+            return
         self.feedback.append({
             "kind": kind,
             "pos": pos,
@@ -725,6 +1119,11 @@ class Game:
         replacement = self.deck.draw_card()
         if replacement:
             player.add_card(replacement)
+        if self.remote_role == "host" and not self.game_over:
+            self.remote_round += 1
+            who = "you" if player is self.remote_player else "host"
+            self._send_remote_state({"kind": "correct", "who": who})
+            return
         if self.mode == "local":
             self.lock_until = pygame.time.get_ticks() + self.config["input_lock_ms"]
             self.show_message(f"{player.name}: acerto!", player.color)
@@ -739,7 +1138,7 @@ class Game:
                 player.score -= 1
         self.sound.play_effect("error")
         self._add_feedback("incorrect", pos)
-        if self.config["hint_on_error"]:
+        if self.config["hint_on_error"] and player in self.players:
             card = player.hand[0]
             if card:
                 p_idx = self.players.index(player)
@@ -750,6 +1149,9 @@ class Game:
                             hint_pos = (px + rel[0], py + rel[1])
                             self._add_feedback("hint", hint_pos)
                             break
+        if self.remote_role == "host" and player is self.remote_player and not self.game_over:
+            self._send_remote_state({"kind": "incorrect", "who": "you"})
+            return
         if self.mode == "local":
             self.show_message(f"{player.name}: no coincide!", ACCENT_ERROR)
         else:
@@ -765,6 +1167,21 @@ class Game:
         self.message_end = pygame.time.get_ticks() + 60000
         self.sound.stop_music()
         self.sound.play_effect("game_over")
+        if (self.remote_role == "host" and self.remote is not None
+                and not getattr(self, "_remote_game_over_sent", False)):
+            self._remote_game_over_sent = True
+            self.remote.send({
+                "type": "GAME_OVER",
+                "round": self.remote_round,
+                "host": self.players[0].name,
+                "host_score": self.players[0].score,
+                "host_correct": self.players[0].correct,
+                "host_incorrect": self.players[0].incorrect,
+                "you": self.remote_player.name,
+                "you_score": self.remote_player.score,
+                "you_correct": self.remote_player.correct,
+                "you_incorrect": self.remote_player.incorrect,
+            })
 
     def show_message(self, text, color):
         self.message = text
@@ -777,6 +1194,8 @@ class Game:
             self._render_menu(screen)
         elif self.state == "SETTINGS":
             self._render_settings(screen)
+        elif self.state == "REMOTE":
+            self._draw_remote_menu(screen)
         else:
             self._render_game(screen)
             if self.paused:
@@ -1259,6 +1678,38 @@ class Game:
             center_text(screen, str(self.deck.remaining()), self.h - 100, value_font, TEXT_PRIMARY)
             return
 
+        if self.mode == "remote":
+            me = self.players[0]
+            remaining = (self.deck.remaining()
+                         if self.remote_role == "host"
+                         else self.remote_remaining)
+
+            def remote_section(name, color, score, correct, incorrect, base_y):
+                center_text(screen, name, base_y, label_font, color)
+                center_text(screen, str(score), base_y + 32, value_font, TEXT_PRIMARY)
+                center_text(screen, "Correctas", base_y + 70, label_font, TEXT_SECONDARY)
+                center_text(screen, str(correct), base_y + 94, value_font, ACCENT_SUCCESS)
+                center_text(screen, "Fallos", base_y + 126, label_font, TEXT_SECONDARY)
+                center_text(screen, str(incorrect), base_y + 150, value_font, ACCENT_ERROR)
+                pygame.draw.line(screen, BORDER, (20, base_y + 170),
+                                 (self.panel_w - 20, base_y + 170), 1)
+
+            if self.remote_role == "host":
+                opp = self.remote_player
+                remote_section(me.name, PLAYER1_COLOR, me.score, me.correct,
+                               me.incorrect, 100)
+                remote_section(opp.name, PLAYER2_COLOR, opp.score, opp.correct,
+                               opp.incorrect, 320)
+            else:
+                remote_section(me.name, PLAYER1_COLOR, me.score, me.correct,
+                               me.incorrect, 100)
+                remote_section(self.remote_opponent, PLAYER2_COLOR,
+                               self.remote_opp_score, self.remote_opp_correct,
+                               self.remote_opp_incorrect, 320)
+            center_text(screen, "Mazo", self.h - 130, label_font, TEXT_SECONDARY)
+            center_text(screen, str(remaining), self.h - 100, value_font, TEXT_PRIMARY)
+            return
+
         player = self.players[0]
         center_text(screen, player.name, 66, label_font, PLAYER1_COLOR)
         center_text(screen, str(player.score), 96, value_font, TEXT_PRIMARY)
@@ -1371,7 +1822,7 @@ class Game:
         panel_scale = 0.74 + 0.26 * ease_out_back(enter)
 
         pw = min(760, self.w - 100)
-        ph = 470 if self.mode == "local" else 440
+        ph = 470 if self.mode in ("local", "remote") else 440
         panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
         panel_color = tuple(min(255, int(c * 1.08)) for c in BG_PANEL)
         bounds = pygame.Rect(0, 0, pw, ph)
@@ -1415,9 +1866,22 @@ class Game:
         cx = pw // 2
         count = ease_out_cubic(min(1.0, elapsed / 0.8))
 
-        if self.mode == "local":
-            max_score = max(p.score for p in self.players)
-            winners = [p for p in self.players if p.score == max_score]
+        if self.mode in ("local", "remote"):
+            if self.mode == "remote":
+                if self.remote_role == "host":
+                    players = [self.players[0], self.remote_player]
+                else:
+                    players = [self.players[0]]
+                    opp = Player(self.remote_opponent)
+                    opp.color = PLAYER2_COLOR
+                    opp.score = self.remote_opp_score
+                    opp.correct = self.remote_opp_correct
+                    opp.incorrect = self.remote_opp_incorrect
+                    players.append(opp)
+            else:
+                players = list(self.players)
+            max_score = max(p.score for p in players)
+            winners = [p for p in players if p.score == max_score]
             min_fallos = min(p.incorrect for p in winners)
             winners = [p for p in winners if p.incorrect == min_fallos]
             if len(winners) == 1:
@@ -1434,7 +1898,7 @@ class Game:
             panel.blit(rendered, rendered.get_rect(center=(cx, 58)))
             self._panel_separator(panel, cx, 100, pw)
 
-            for i, player in enumerate(self.players):
+            for i, player in enumerate(players):
                 row_y = 178 + i * 96
                 is_winner = player is winner
                 row = pygame.Rect(46, row_y - 40, pw - 92, 80)
@@ -1523,33 +1987,35 @@ class Game:
             self._pause_backdrop = blur_backdrop(screen)
         screen.blit(self._pause_backdrop, (0, 0))
 
-        pw = min(520, self.w - 100)
-        ph = 410
+        pw = min(540, self.w - 100)
+        ph = 430
         panel = draw_modal_panel(screen, self.w, self.h, pw, ph)
+        draw_modal_ribbon(screen, panel, ACCENT_PRIMARY)
+
+        icon = pygame.Surface((26, 34), pygame.SRCALPHA)
+        pygame.draw.rect(icon, ACCENT_PRIMARY, (0, 0, 9, 34), border_radius=4)
+        pygame.draw.rect(icon, ACCENT_PRIMARY, (17, 0, 9, 34), border_radius=4)
+        screen.blit(icon, icon.get_rect(center=(panel.centerx, panel.top + 64)))
+
         title = fit_scaled(
-            load_font(40).render("PAUSA", True, ACCENT_PRIMARY),
+            load_font(44).render("PAUSA", True, ACCENT_PRIMARY),
             breathe(0.02, 1.8))
-        screen.blit(title, title.get_rect(center=(panel.centerx, panel.top + 62)))
-        hint = load_font(15).render("Esc: reanudar", True, TEXT_MUTED)
-        screen.blit(hint, hint.get_rect(center=(panel.centerx, panel.top + 104)))
+        screen.blit(title, title.get_rect(center=(panel.centerx, panel.top + 116)))
 
         colors = (ACCENT_PRIMARY, TEXT_SECONDARY, ACCENT_WARNING, ACCENT_ERROR)
         self.pause_rects = []
-        btn_w, btn_h, gap = 340, 50, 12
-        x0 = panel.centerx - btn_w // 2
-        y0 = panel.top + 140
-        mouse = pygame.mouse.get_pos()
+        option_h = 52
+        start_y = panel.top + 190
         for i, (label, _callback) in enumerate(self.pause_options):
-            rect = pygame.Rect(x0, y0 + i * (btn_h + gap), btn_w, btn_h)
-            selected = (i == self.pause_index) or rect.collidepoint(mouse)
-            base = tuple(min(255, int(c * 1.28)) for c in BG_SECONDARY)
-            pygame.draw.rect(screen, base if selected else BG_SECONDARY, rect,
-                             border_radius=10)
-            pygame.draw.rect(screen, colors[i], rect, 3 if selected else 2,
-                             border_radius=10)
-            _, text = render_fitting_text(label, [24, 21, 18],
-                                                btn_w - 20, TEXT_PRIMARY)
-            screen.blit(text, text.get_rect(center=rect.center))
+            selected = i == self.pause_index
+            color = colors[i] if selected else TEXT_SECONDARY
+            _, rendered = render_fitting_text(
+                label, [36, 32, 28, 24, 20, 18], pw - 60, color)
+            rect = rendered.get_rect(center=(panel.centerx, start_y + i * option_h))
+            if selected:
+                blit_breathing(screen, rendered, rect, breathe(0.04, 1.6))
+            else:
+                screen.blit(rendered, rect)
             self.pause_rects.append(rect)
 
     def _draw_resume_countdown(self, screen):
@@ -1568,36 +2034,41 @@ class Game:
         if self._confirm_backdrop is None:
             self._confirm_backdrop = blur_backdrop(screen)
         screen.blit(self._confirm_backdrop, (0, 0))
-        pw, ph = 600, 250
+        pw, ph = 580, 300
         panel = draw_modal_panel(screen, self.w, self.h, pw, ph)
+        blit_modal_shadow(screen, panel)
+        draw_modal_ribbon(screen, panel, ACCENT_WARNING)
+
+        icon = pygame.Surface((74, 74), pygame.SRCALPHA)
+        pygame.draw.circle(icon, (0, 0, 0, 110), (37, 39), 34)
+        pygame.draw.circle(icon, ACCENT_WARNING, (37, 37), 30, 3)
+        ask = load_font(50).render("?", True, ACCENT_WARNING)
+        icon.blit(ask, ask.get_rect(center=(37, 35)))
+        pulso = breathe(0.04, 2.0)
+        shown = fit_scaled(icon, pulso)
+        screen.blit(shown, shown.get_rect(center=(panel.centerx,
+                                                  panel.top + 86)))
+
         _, text = render_fitting_text(
             self.confirm["message"], [30, 26, 22, 18], pw - 60, TEXT_PRIMARY)
-        screen.blit(text, text.get_rect(center=(panel.centerx, panel.top + 72)))
+        screen.blit(text, text.get_rect(center=(panel.centerx,
+                                                panel.top + 164)))
 
         self.confirm_rects = []
-        btn_w, btn_h, gap = 170, 46, 24
-        total = btn_w * 2 + gap
-        x0 = panel.centerx - total // 2
-        by = panel.bottom - btn_h - 24
-        options = [("Si", ACCENT_SUCCESS, "yes"), ("No", ACCENT_ERROR, "no")]
-        mouse = pygame.mouse.get_pos()
-        for i, (label, color, action) in enumerate(options):
-            rect = pygame.Rect(x0 + i * (btn_w + gap), by, btn_w, btn_h)
-            selected = (i == self.confirm_index) or rect.collidepoint(mouse)
-            base = tuple(min(255, int(c * 1.25)) for c in BG_SECONDARY)
-            _, lab = render_fitting_text(label, [26, 22, 19],
-                                               btn_w - 16, TEXT_PRIMARY)
+        option_h = 48
+        option_gap = 80
+        start_y = panel.top + 220
+        options = [("SI", "yes"), ("NO", "no")]
+        for i, (label, action) in enumerate(options):
+            selected = i == self.confirm_index
+            color = ACCENT_SUCCESS if (i == 0 and selected) else (
+                ACCENT_ERROR if (i == 1 and selected) else TEXT_SECONDARY)
+            _, rendered = render_fitting_text(
+                label, [36, 32, 28, 24, 20, 18], pw - 60, color)
+            x_pos = panel.centerx + (i - 0.5) * option_gap
+            rect = rendered.get_rect(center=(x_pos, start_y))
             if selected:
-                scale = breathe(0.05, 1.4)
-                btn = pygame.Surface((btn_w, btn_h), pygame.SRCALPHA)
-                bbox = btn.get_rect()
-                pygame.draw.rect(btn, base, bbox, border_radius=10)
-                pygame.draw.rect(btn, color, bbox, 3, border_radius=10)
-                btn.blit(lab, lab.get_rect(center=bbox.center))
-                shown = fit_scaled(btn, scale)
-                screen.blit(shown, shown.get_rect(center=rect.center))
+                blit_breathing(screen, rendered, rect, breathe(0.05, 1.4))
             else:
-                pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=10)
-                pygame.draw.rect(screen, color, rect, 2, border_radius=10)
-                screen.blit(lab, lab.get_rect(center=rect.center))
+                screen.blit(rendered, rect)
             self.confirm_rects.append((action, rect))

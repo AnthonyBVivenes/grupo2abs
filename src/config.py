@@ -14,6 +14,8 @@ DEFAULT_CONFIG = {
     "input_lock_ms": 300,
     "p1_keys": ["Q", "W", "E", "R", "A", "S", "D", "F"],
     "p2_keys": ["1", "2", "3", "4", "5", "6", "7", "8"],
+    "remote_ip": "127.0.0.1",
+    "remote_port": 7777,
 }
 
 

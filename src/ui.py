@@ -123,6 +123,28 @@ def draw_modal_panel(surface, win_w, win_h, w, h):
     return rect
 
 
+def blit_modal_shadow(surface, rect, radius=16):
+    """Sombra sutil por capas bajo el panel, para dar profundidad."""
+    pad = 14
+    shadow = pygame.Surface((rect.w + 2 * pad, rect.h + 2 * pad),
+                            pygame.SRCALPHA)
+    body = pygame.Rect(pad, pad, rect.w, rect.h)
+    body.move_ip(2, 10)
+    pygame.draw.rect(shadow, (0, 0, 0, 70), body, border_radius=radius)
+    body.move_ip(-2, -6)
+    pygame.draw.rect(shadow, (0, 0, 0, 35), body, border_radius=radius)
+    surface.blit(shadow, (rect.x - pad, rect.y - pad))
+
+
+def draw_modal_ribbon(surface, rect, color, width=8):
+    """Banda de acento translucida que corona el modal."""
+    bar = pygame.Surface((rect.w, width + 4), pygame.SRCALPHA)
+    bar.fill((*color[:3], 55))
+    pygame.draw.rect(bar, (*color[:3], 235), (2, 0, rect.w - 4, width),
+                     border_radius=width // 2)
+    surface.blit(bar, (rect.x, rect.y + 8))
+
+
 def key_display_name(key):
     if not key:
         return "-"

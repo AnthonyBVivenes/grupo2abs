@@ -1,6 +1,6 @@
 {
-  "time_limit": 60,
-  "card_scale": "normal",
+  "time_limit": 30,
+  "card_scale": "large",
   "hint_on_error": true,
   "miss_penalty": "light",
   "player_names": [
@@ -13,20 +13,22 @@
     "Q",
     "W",
     "E",
-    "R",
     "A",
     "S",
-    "D",
-    "F"
+    "Z",
+    "X",
+    "C"
   ],
   "p2_keys": [
-    "1",
-    "2",
-    "3",
+    "7",
+    "8",
+    "9",
     "4",
     "5",
-    "6",
-    "7",
-    "8"
-  ]
+    "1",
+    "2",
+    "3"
+  ],
+  "remote_ip": "127.0.0.1",
+  "remote_port": 7777
 }
