@@ -51,6 +51,7 @@ class RemotePeer:
             while True:
                 chunk = self.sock.recv(4096)
                 if not chunk:
+                    print("[DEBUG peer] recv empty -> connection closed by remote")
                     break
                 buf += chunk
                 while b"\n" in buf:
@@ -60,11 +61,14 @@ class RemotePeer:
                         continue
                     try:
                         msg = json.loads(line.decode("utf-8"))
-                    except (ValueError, UnicodeDecodeError):
+                    except (ValueError, UnicodeDecodeError) as e:
+                        print(f"[DEBUG peer] decode error: {e}")
                         continue
                     self._queue.put(msg)
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"[DEBUG peer] OSError in read_loop: {e}")
+        except Exception as e:
+            print(f"[DEBUG peer] unexpected error in read_loop: {e}")
         finally:
             self._closed = True
             self._queue.put({"type": "DISCONNECT"})
@@ -169,6 +173,7 @@ class RemoteClient:
         sock.settimeout(timeout)
         try:
             sock.connect((host, port))
+            sock.settimeout(None)  # quitar timeout tras conectar
             self.peer = RemotePeer(sock)
         except OSError as exc:
             self.error = str(exc)
