@@ -1,0 +1,7 @@
+{
+  "title": "Dobble TDAH",
+  "description": "Juego de cartas de observación rápida basado en Dobble, diseñado para estimular atención selectiva, sostenida, control de impulsos y velocidad de procesamiento visual en personas con TDAH. Incluye modos 1 jugador, multijugador local y remoto.",
+  "authors": ["Anthony Vivenes", "Abelardo Drika", "Pedro Alejandro", "Alexander López"],
+  "group_number": 1,
+  "controls": "Teclado (teclas personalizables por jugador) y Ratón"
+}
