@@ -21,6 +21,8 @@ INTRO_END_MS = 2700
 INTRO_LOOP_FADE_MS = 2000
 INTRO_LOOP_OVERLAP_MS = 1000
 INTRO_ENTRY_MS = 550
+RESUME_STEP_MS = 400
+RESUME_MS = RESUME_STEP_MS * 3
 SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
 
 _KEY_LABEL_SHORTHAND = {
@@ -73,6 +75,22 @@ class Game:
         self._game_over_rects_local = []
         self.game_over_start = 0
         self._game_over_backdrop = None
+        self.paused = False
+        self.pause_start = 0
+        self.pause_index = 0
+        self.pause_rects = []
+        self._pause_backdrop = None
+        self.resuming = False
+        self.resuming_start = 0
+        self.confirm = None
+        self.confirm_index = 1
+        self.confirm_rects = []
+        self.pause_options = [
+            ("Reanudar", self._resume_game),
+            ("Reiniciar", self._pause_restart),
+            ("Volver al menu", self._pause_menu),
+            ("Salir del juego", self._pause_quit),
+        ]
         self._name_index = 0
         self._name_before = None
         self._keys_backup = None
@@ -139,6 +157,12 @@ class Game:
         self.game_over = False
         self.game_over_rects = []
         self._game_over_backdrop = None
+        self.paused = False
+        self.resuming = False
+        self.pause_rects = []
+        self._pause_backdrop = None
+        self.confirm = None
+        self.confirm_rects = []
         self.message = ""
         self.message_color = TEXT_PRIMARY
         self.message_end = 0
@@ -208,7 +232,59 @@ class Game:
         self.menu_msg_end = pygame.time.get_ticks() + 2000
 
     def _quit_game(self):
+        self._request_quit()
+
+    def _do_quit(self):
         self.running = False
+
+    def _request_quit(self):
+        if self.confirm is not None:
+            return
+        self._open_confirm("Salir del juego?", self._do_quit)
+
+    def _open_confirm(self, message, on_yes):
+        self.confirm = {"message": message, "on_yes": on_yes}
+        self.confirm_index = 1
+        self.confirm_rects = []
+
+    def _close_confirm(self):
+        self.confirm = None
+        self.confirm_rects = []
+
+    def _confirm_yes(self):
+        callback = self.confirm["on_yes"] if self.confirm else None
+        self._close_confirm()
+        if callback:
+            callback()
+
+    def _open_pause(self):
+        self.paused = True
+        self.pause_start = pygame.time.get_ticks()
+        self.pause_index = 0
+        self.pause_rects = []
+        self._pause_backdrop = None
+        self.sound.pause_music()
+
+    def _resume_game(self):
+        self.paused = False
+        self.pause_rects = []
+        self.sound.resume_music()
+        if self.intro:
+            frozen = pygame.time.get_ticks() - self.pause_start
+            self.game_start += frozen
+            self.intro_start += frozen
+        else:
+            self.resuming = True
+            self.resuming_start = pygame.time.get_ticks()
+
+    def _pause_restart(self):
+        self._open_confirm("Reiniciar la partida?", self._restart_game)
+
+    def _pause_menu(self):
+        self._open_confirm("Volver al menu?", self._go_to_menu)
+
+    def _pause_quit(self):
+        self._open_confirm("Salir del juego?", self._do_quit)
 
     def run(self):
         while self.running:
@@ -222,7 +298,7 @@ class Game:
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self.running = False
+                self._request_quit()
             elif event.type == pygame.VIDEORESIZE:
                 if not self.config["fullscreen"]:
                     self.w, self.h = event.w, event.h
@@ -240,6 +316,14 @@ class Game:
                 self.handle_key(event.key)
 
     def handle_key(self, key):
+        if self.confirm is not None:
+            self._handle_confirm_key(key)
+            return
+        if self.paused:
+            self._handle_pause_key(key)
+            return
+        if self.resuming:
+            return
         if self.state == "SETTINGS":
             self._handle_settings_key(key)
             return
@@ -255,7 +339,9 @@ class Game:
                 _, callback = self.menu_options[self.menu_index]
                 callback()
             elif key == pygame.K_ESCAPE:
-                self.running = False
+                self._quit_game()
+        elif key == pygame.K_ESCAPE and self.state == "PLAYING" and not self.game_over:
+            self._open_pause()
         elif key == pygame.K_ESCAPE:
             self._go_to_menu()
         elif key == pygame.K_r and self.game_over:
@@ -263,11 +349,51 @@ class Game:
         elif self.state == "PLAYING" and self.mode == "local" and not self.game_over:
             self._handle_local_input(pygame.key.name(key))
 
+    def _handle_confirm_key(self, key):
+        if key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_a, pygame.K_d,
+                   pygame.K_TAB):
+            self.confirm_index = 1 - self.confirm_index
+            self.sound.play_effect("navigate")
+        elif key == pygame.K_y:
+            self.sound.play_effect("select")
+            self._confirm_yes()
+        elif key in (pygame.K_n, pygame.K_ESCAPE):
+            self.sound.play_effect("select")
+            self._close_confirm()
+        elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
+            self.sound.play_effect("select")
+            if self.confirm_index == 0:
+                self._confirm_yes()
+            else:
+                self._close_confirm()
+
+    def _handle_pause_key(self, key):
+        n = len(self.pause_options)
+        if key in (pygame.K_UP, pygame.K_w):
+            self.pause_index = (self.pause_index - 1) % n
+            self.sound.play_effect("navigate")
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.pause_index = (self.pause_index + 1) % n
+            self.sound.play_effect("navigate")
+        elif key == pygame.K_ESCAPE:
+            self.sound.play_effect("select")
+            self._resume_game()
+        elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
+            self.sound.play_effect("select")
+            _, callback = self.pause_options[self.pause_index]
+            callback()
+
     def _go_to_menu(self):
         self.state = "MENU"
         self.game_over = False
         self.game_over_rects = []
         self._game_over_backdrop = None
+        self.paused = False
+        self.resuming = False
+        self.pause_rects = []
+        self._pause_backdrop = None
+        self.confirm = None
+        self.confirm_rects = []
         self.sound.stop_music()
         self.sound.play_music("lobby")
 
@@ -458,6 +584,15 @@ class Game:
             if abs(target - self.settings_wheel) < 0.01:
                 self.settings_wheel = float(target)
                 self.settings_index = target % n
+        if self.state == "PLAYING" and not self.game_over and (self.paused or self.resuming):
+            if self.resuming:
+                now = pygame.time.get_ticks()
+                if now - self.resuming_start >= RESUME_MS:
+                    frozen = now - self.pause_start
+                    self.game_start += frozen
+                    self.intro_start += frozen
+                    self.resuming = False
+            return
         if self.state == "PLAYING" and not self.game_over:
             if self.intro:
                 now = pygame.time.get_ticks()
@@ -485,6 +620,27 @@ class Game:
                         self._end_game()
 
     def handle_click(self, pos):
+        if self.confirm is not None:
+            for action, rect in self.confirm_rects:
+                if rect.collidepoint(pos):
+                    self.sound.play_effect("select")
+                    if action == "yes":
+                        self._confirm_yes()
+                    else:
+                        self._close_confirm()
+                    return
+            return
+        if self.paused:
+            for index, rect in enumerate(self.pause_rects):
+                if rect.collidepoint(pos):
+                    self.pause_index = index
+                    self.sound.play_effect("select")
+                    _, callback = self.pause_options[index]
+                    callback()
+                    return
+            return
+        if self.resuming:
+            return
         if self.state == "SETTINGS":
             if self.modal is not None:
                 self._handle_modal_click(pos)
@@ -644,6 +800,12 @@ class Game:
             self._render_settings(screen)
         else:
             self._render_game(screen)
+            if self.paused:
+                self._draw_pause(screen)
+            elif self.resuming:
+                self._draw_resume_countdown(screen)
+        if self.confirm is not None:
+            self._draw_confirm(screen)
         pygame.display.flip()
 
     def _render_settings(self, screen):
@@ -781,8 +943,8 @@ class Game:
             self._draw_modal_keys(screen)
 
     def _draw_modal_panel(self, screen, w, h):
-        rect = pygame.Rect((self.w - w) // 2, (self.h - h) // 2, w, h)
         panel_color = tuple(min(255, int(c * 1.08)) for c in BG_PANEL)
+        rect = pygame.Rect((self.w - w) // 2, (self.h - h) // 2, w, h)
         pygame.draw.rect(screen, panel_color, rect, border_radius=16)
         pygame.draw.rect(screen, ACCENT_PRIMARY, rect, 3, border_radius=16)
         return rect
@@ -811,32 +973,22 @@ class Game:
         value = key.upper()
         return _KEY_LABEL_SHORTHAND.get(key.lower().replace(" ", ""), value)
 
-    def _render_fitting_text(self, text, sizes, max_w, color):
-        # --- AJUSTE DE FUENTE ---
-        # `sizes` es una lista de tamaños de fuente, de mayor a menor,
-        # que se prueban en orden: se usa el primer tamaño cuyo texto
-        # quepa dentro de `max_w` píxeles de ancho (y no se dibuja nada
-        # más grande). Cadena arriba = texto más gordo; cadena abajo =
-        # texto más fino pero legible. Reduce la lista si quieres menos
-        # escalones (p. ej. [38, 30, 22]) o agranda `max_w` para dar
-        # más margen antes de recortar el texto.
+    def _render_fitting_text(self, text, sizes, max_width, color):
         if not text:
-            # Renderizar un espacio: una superficie de ancho 0 hace que
-            # pygame.transform.smoothscale provoque un fallo (segfault).
             font = load_font(sizes[-1])
             return font, font.render(" ", True, color)
         ellipsis = "..."
         for size in sizes:
             font = load_font(size)
-            if font.size(text)[0] <= max_w:
+            if font.size(text)[0] <= max_width:
                 return font, font.render(text, True, color)
         font = load_font(sizes[-1])
         ell_surf = font.render(ellipsis, True, color)
         e_w = ell_surf.get_width()
-        if e_w >= max_w:
+        if e_w >= max_width:
             return font, font.render(text[-1] if len(text) <= 2 else text[:2], True, color)
         remain = text
-        while remain and font.size(remain)[0] + e_w > max_w:
+        while remain and font.size(remain)[0] + e_w > max_width:
             remain = remain[:-1]
         if not remain:
             return font, font.render(ellipsis, True, color)
@@ -1010,13 +1162,13 @@ class Game:
                 for p_idx, player in enumerate(self.players):
                     if player.hand and p_idx < len(self.player_positions):
                         player.hand[0].draw(screen, *self.player_positions[p_idx])
+                self._draw_center_ring(screen, cx, cy)
             if self.intro:
                 self._draw_intro_effects(screen)
         self._draw_feedback(screen)
         self._draw_message(screen)
         if self.game_over:
             self._draw_game_over(screen)
-        pygame.display.flip()
 
     @staticmethod
     def _ease_out_cubic(t):
@@ -1066,7 +1218,20 @@ class Game:
                     (px + CARD_WIDTH // 2, pyy + CARD_HEIGHT // 2),
                     (ox, oy), angles[idx], e)
 
+    def _draw_center_ring(self, screen, cx, cy):
+        """Anillo pulsante sobre la carta central: senala el objetivo de la
+        partida (ayuda a la concentracion)."""
+        b = self._breath_scale(0.2, 1.6)
+        pad = int(6 + 9 * (b - 0.8) / 0.4)
+        alpha = int(110 + 130 * (b - 0.8) / 0.4)
+        rw, rh = CARD_WIDTH + 2 * pad, CARD_HEIGHT + 2 * pad
+        ring = pygame.Surface((rw, rh), pygame.SRCALPHA)
+        pygame.draw.rect(ring, (*ACCENT_PRIMARY, alpha),
+                         ring.get_rect(), 3, border_radius=14)
+        screen.blit(ring, (cx - pad, cy - pad))
+
     def _scaled_text(self, text, base_size, scale, color, alpha=255):
+        """Renderiza texto y lo escala/altera alpha en una sola ayuda."""
         surf = load_font(base_size).render(text, True, color)
         if surf.get_width() == 0 or surf.get_height() == 0:
             return surf
@@ -1381,10 +1546,10 @@ class Game:
                     True, TEXT_MUTED)
                 panel.blit(detail, detail.get_rect(midleft=(dot_x + 26, row_y + 16)))
                 pts = value_font.render(f"{int(player.score * count)} pts",
-                                        True, ACCENT_PRIMARY)
+                                        True, GOLD if is_winner else ACCENT_PRIMARY)
                 panel.blit(pts, pts.get_rect(midright=(row.right - 24, row_y + 8)))
                 if is_winner:
-                    tag = small_font.render("GANADOR", True, ACCENT_PRIMARY)
+                    tag = small_font.render("GANADOR", True, GOLD)
                     panel.blit(tag, tag.get_rect(midright=(row.right - 24, row_y - 24)))
 
             self._game_over_buttons(panel, pw, ph, panel_mouse)
@@ -1400,7 +1565,7 @@ class Game:
         panel.blit(title, title.get_rect(center=(cx, 58)))
         self._panel_separator(panel, cx, 100, pw)
 
-        big = big_font.render(str(int(player.score * count)), True, ACCENT_PRIMARY)
+        big = big_font.render(str(int(player.score * count)), True, GOLD)
         panel.blit(big, big.get_rect(center=(cx, 172)))
         label = small_font.render("PUNTOS", True, TEXT_MUTED)
         panel.blit(label, label.get_rect(center=(cx, 216)))
@@ -1445,3 +1610,85 @@ class Game:
                                                 btn_w - 16, TEXT_PRIMARY)
             panel.blit(text, text.get_rect(center=rect.center))
             self._game_over_rects_local.append((action, rect.copy()))
+
+    def _draw_pause(self, screen):
+        if self._pause_backdrop is None:
+            self._pause_backdrop = self._blur_backdrop(screen)
+        screen.blit(self._pause_backdrop, (0, 0))
+
+        pw = min(520, self.w - 100)
+        ph = 410
+        panel = self._draw_modal_panel(screen, pw, ph)
+        title = self._fit_scaled(
+            load_font(40).render("PAUSA", True, ACCENT_PRIMARY),
+            self._breath_scale(0.02, 1.8))
+        screen.blit(title, title.get_rect(center=(panel.centerx, panel.top + 62)))
+        hint = load_font(15).render("Esc: reanudar", True, TEXT_MUTED)
+        screen.blit(hint, hint.get_rect(center=(panel.centerx, panel.top + 104)))
+
+        colors = (ACCENT_PRIMARY, TEXT_SECONDARY, ACCENT_WARNING, ACCENT_ERROR)
+        self.pause_rects = []
+        btn_w, btn_h, gap = 340, 50, 12
+        x0 = panel.centerx - btn_w // 2
+        y0 = panel.top + 140
+        mouse = pygame.mouse.get_pos()
+        for i, (label, _callback) in enumerate(self.pause_options):
+            rect = pygame.Rect(x0, y0 + i * (btn_h + gap), btn_w, btn_h)
+            selected = (i == self.pause_index) or rect.collidepoint(mouse)
+            base = tuple(min(255, int(c * 1.28)) for c in BG_SECONDARY)
+            pygame.draw.rect(screen, base if selected else BG_SECONDARY, rect,
+                             border_radius=10)
+            pygame.draw.rect(screen, colors[i], rect, 3 if selected else 2,
+                             border_radius=10)
+            _, text = self._render_fitting_text(label, [24, 21, 18],
+                                                btn_w - 20, TEXT_PRIMARY)
+            screen.blit(text, text.get_rect(center=rect.center))
+            self.pause_rects.append(rect)
+
+    def _draw_resume_countdown(self, screen):
+        elapsed = pygame.time.get_ticks() - self.resuming_start
+        idx = min(2, elapsed // RESUME_STEP_MS)
+        local = (elapsed % RESUME_STEP_MS) / RESUME_STEP_MS
+        scale = 0.7 + 0.5 * self._ease_out_cubic(local)
+        veil = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 90))
+        screen.blit(veil, (0, 0))
+        number = self._fit_scaled(
+            load_font(120).render(str(3 - idx), True, ACCENT_PRIMARY), scale)
+        screen.blit(number, number.get_rect(center=(self.w // 2, self.h // 2)))
+
+    def _draw_confirm(self, screen):
+        screen.blit(self._blur_backdrop(screen), (0, 0))
+        pw, ph = 600, 250
+        panel = self._draw_modal_panel(screen, pw, ph)
+        _, text = self._render_fitting_text(
+            self.confirm["message"], [30, 26, 22, 18], pw - 60, TEXT_PRIMARY)
+        screen.blit(text, text.get_rect(center=(panel.centerx, panel.top + 72)))
+
+        self.confirm_rects = []
+        btn_w, btn_h, gap = 170, 46, 24
+        total = btn_w * 2 + gap
+        x0 = panel.centerx - total // 2
+        by = panel.bottom - btn_h - 24
+        options = [("Si", ACCENT_SUCCESS, "yes"), ("No", ACCENT_ERROR, "no")]
+        mouse = pygame.mouse.get_pos()
+        for i, (label, color, action) in enumerate(options):
+            rect = pygame.Rect(x0 + i * (btn_w + gap), by, btn_w, btn_h)
+            selected = (i == self.confirm_index) or rect.collidepoint(mouse)
+            base = tuple(min(255, int(c * 1.25)) for c in BG_SECONDARY)
+            _, lab = self._render_fitting_text(label, [26, 22, 19],
+                                               btn_w - 16, TEXT_PRIMARY)
+            if selected:
+                scale = self._breath_scale(0.05, 1.4)
+                btn = pygame.Surface((btn_w, btn_h), pygame.SRCALPHA)
+                bbox = btn.get_rect()
+                pygame.draw.rect(btn, base, bbox, border_radius=10)
+                pygame.draw.rect(btn, color, bbox, 3, border_radius=10)
+                btn.blit(lab, lab.get_rect(center=bbox.center))
+                shown = self._fit_scaled(btn, scale)
+                screen.blit(shown, shown.get_rect(center=rect.center))
+            else:
+                pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=10)
+                pygame.draw.rect(screen, color, rect, 2, border_radius=10)
+                screen.blit(lab, lab.get_rect(center=rect.center))
+            self.confirm_rects.append((action, rect))

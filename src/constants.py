@@ -10,7 +10,8 @@ from palette import (
     SKY_BLUE, LAVENDER, CREAM, WARM_WHITE,
     SUCCESS, ERROR, WARNING, INFO,
     UI_BACKGROUNDS, UI_TEXT_LIGHT, UI_TEXT_DARK, UI_ACCENTS,
-    hex_color, get_color, PALE_YELLOW
+    hex_color, get_color, PALE_YELLOW,
+    LIGHT_CYAN, LIGHT_GREEN, LIGHT_BLUE, DARK_TEAL
 )
 
 # Ventana redimensionable y más compacta por defecto
@@ -60,20 +61,21 @@ BLUE = BLUE
 GREEN = GREEN
 GRAY = DARK_PURPLE
 
-# Colores UI con paleta Lospec500
+# Colores UI con paleta Lospec500 (variante adaptada a concentracion / TDAH:
+# acentos frios y apagados, poco brillo; el dorado se reserva para celebrar)
 BG_COLOR = DARKEST           # Fondo pantalla
 BG_SECONDARY = DARK_PURPLE   # Paneles secundarios
-BG_PANEL = MID_PURPLE        # Paneles editor/debug
+BG_PANEL = DARK_TEAL         # Paneles editor/debug (verde azulado calmado)
 TEXT_PRIMARY = WHITE         # Texto principal
 TEXT_SECONDARY = CREAM       # Texto secundario
 TEXT_MUTED = PALE_YELLOW     # Texto apagado
-ACCENT_PRIMARY = GOLD        # Acento principal
-ACCENT_SECONDARY = ORANGE    # Acento secundario
-ACCENT_SUCCESS = SUCCESS     # Verde éxito
-ACCENT_ERROR = ERROR         # Rojo error
-ACCENT_WARNING = WARNING     # Amarillo warning
-ACCENT_INFO = INFO           # Azul info
-HIGHLIGHT = GOLD             # Highlight cartas
+ACCENT_PRIMARY = LIGHT_CYAN  # Acento principal (cian suave, baja excitacion)
+ACCENT_SECONDARY = SKY_BLUE  # Acento secundario
+ACCENT_SUCCESS = LIGHT_GREEN # Verde suave (acierto)
+ACCENT_ERROR = CORAL         # Rojo suave (fallo)
+ACCENT_WARNING = GOLD        # Dorado: avisos / celebraciones
+ACCENT_INFO = LIGHT_BLUE     # Azul info
+HIGHLIGHT = GOLD             # Highlight cartas / celebracion
 BORDER = TEAL                # Bordes
 BORDER_LIGHT = SKY_BLUE      # Bordes claros
 

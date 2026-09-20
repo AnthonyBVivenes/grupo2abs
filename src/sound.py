@@ -46,6 +46,7 @@ class SoundManager:
         self._fade_ms = 0
         self._fade_start = 0
         self._fade_vol = music_volume
+        self._paused = False
 
     def play_effect(self, name, volume=None):
         if not self.enabled:
@@ -75,6 +76,7 @@ class SoundManager:
             pygame.mixer.music.play(-1 if loop else 0)
             self._music = track
             self._fade_ms = 0
+            self._paused = False
         except pygame.error:
             pass
 
@@ -94,6 +96,7 @@ class SoundManager:
             self._fade_start = pygame.time.get_ticks() + max(0, delay_ms)
             self._fade_ms = max(1, fade_ms)
             self._fade_vol = self.music_volume
+            self._paused = False
         except pygame.error:
             pass
 
@@ -104,6 +107,7 @@ class SoundManager:
         pygame.mixer.music.fadeout(ms)
         self._music = None
         self._fade_ms = 0
+        self._paused = False
 
     def effect_length(self, name):
         """Duracion en segundos de un efecto (0 si no esta disponible)."""
@@ -112,9 +116,23 @@ class SoundManager:
             return 0.0
         return sound.get_length()
 
+    def pause_music(self):
+        """Pausa la musica actual conservando la posicion."""
+        if not self.enabled or self._paused:
+            return
+        pygame.mixer.music.pause()
+        self._paused = True
+
+    def resume_music(self):
+        """Reanuda la musica pausada."""
+        if not self.enabled or not self._paused:
+            return
+        pygame.mixer.music.unpause()
+        self._paused = False
+
     def update(self):
         """Sube el volumen de la musica de forma gradual (llamar cada frame)."""
-        if not self.enabled or not self._music or not self._fade_ms:
+        if not self.enabled or self._paused or not self._music or not self._fade_ms:
             return
         t = (pygame.time.get_ticks() - self._fade_start) / self._fade_ms
         if t < 0:
@@ -131,3 +149,4 @@ class SoundManager:
             return
         pygame.mixer.music.stop()
         self._music = None
+        self._paused = False
