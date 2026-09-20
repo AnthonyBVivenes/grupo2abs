@@ -1,25 +1,15 @@
 {
   "time_limit": 60,
   "card_scale": "normal",
-  "hint_on_error": false,
+  "hint_on_error": true,
   "miss_penalty": "light",
   "player_names": [
-    "alex",
-    "otrojugadorr"
+    "Jugador 1",
+    "Jugador 2"
   ],
   "fullscreen": false,
-  "input_lock_ms": 150,
+  "input_lock_ms": 300,
   "p1_keys": [
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8"
-  ],
-  "p2_keys": [
     "Q",
     "W",
     "E",
@@ -28,5 +18,15 @@
     "S",
     "D",
     "F"
+  ],
+  "p2_keys": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8"
   ]
 }
