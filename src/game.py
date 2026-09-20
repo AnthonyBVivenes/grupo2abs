@@ -10,11 +10,13 @@ from deck import Deck
 from fonts import load_font
 from player import Player
 from sound import SoundManager
+from ui import (
+    blit_breathing, blur_backdrop, breathe,
+    draw_modal_panel, ease_out_back, ease_out_cubic, fit_scaled,
+    key_display_name, render_fitting_text, scaled_text,
+)
 
 
-P1_KEYS = list(DEFAULT_CONFIG["p1_keys"])
-P2_KEYS = list(DEFAULT_CONFIG["p2_keys"])
-INPUT_LOCK_MS = 300
 INTRO_NUMBER_MS = 700
 INTRO_GO_MS = 2100
 INTRO_END_MS = 2700
@@ -23,18 +25,6 @@ INTRO_LOOP_OVERLAP_MS = 1000
 INTRO_ENTRY_MS = 550
 RESUME_STEP_MS = 400
 RESUME_MS = RESUME_STEP_MS * 3
-SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
-
-_KEY_LABEL_SHORTHAND = {
-    "space": "SPACE", "left shift": "LSHIFT", "right shift": "RSHIFT",
-    "left ctrl": "LCTRL", "right ctrl": "RCTRL", "left alt": "LALT",
-    "right alt": "RALT", "left meta": "LMETA", "right meta": "RMETA",
-    "caps lock": "CAPS", "backspace": "BKSP", "delete": "DEL",
-    "insert": "INS", "pageup": "PGUP", "pagedown": "PGDN",
-    "home": "HOME", "end": "END", "return": "ENTER", "kpenter": "ENTER",
-    "kp0": "0", "kp1": "1", "kp2": "2", "kp3": "3", "kp4": "4",
-    "kp5": "5", "kp6": "6", "kp7": "7", "kp8": "8", "kp9": "9",
-}
 
 
 class Game:
@@ -42,6 +32,7 @@ class Game:
         self.config = Config()
         self.w, self.h = SCREEN_WIDTH, SCREEN_HEIGHT
         self.windowed_size = (SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.panel_w = SCORE_PANEL_WIDTH
         self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
         pygame.display.set_caption("Dobble")
         self.clock = pygame.time.Clock()
@@ -85,6 +76,7 @@ class Game:
         self.confirm = None
         self.confirm_index = 1
         self.confirm_rects = []
+        self._confirm_backdrop = None
         self.pause_options = [
             ("Reanudar", self._resume_game),
             ("Reiniciar", self._pause_restart),
@@ -137,7 +129,16 @@ class Game:
             self.w, self.h = self.windowed_size
 
     def _apply_card_scale(self):
-        Card.set_layout(symbol_size=SYMBOL_SIZES.get(self.config["card_scale"], 50))
+        """Recalcula el ancho del panel y el tamaño de las cartas según la
+        ventana actual y el tamaño configurado (small/normal/large)."""
+        self.panel_w = max(200, min(300, int(self.w * 0.22)))
+        max_h = int(self.h * (0.32 if self.mode == "local" else 0.34))
+        cw = max(120, min(260, int(max_h * CARD_WIDTH / CARD_HEIGHT)))
+        ch = int(cw * CARD_HEIGHT / CARD_WIDTH)
+        Card.set_card_size(cw, ch)
+        mult = {"small": 0.8, "normal": 1.0, "large": 1.2}.get(
+            self.config["card_scale"], 1.0)
+        Card.set_layout(symbol_size=max(28, int(cw * 0.25 * mult)))
 
     def _open_settings(self):
         self.state = "SETTINGS"
@@ -246,10 +247,12 @@ class Game:
         self.confirm = {"message": message, "on_yes": on_yes}
         self.confirm_index = 1
         self.confirm_rects = []
+        self._confirm_backdrop = None
 
     def _close_confirm(self):
         self.confirm = None
         self.confirm_rects = []
+        self._confirm_backdrop = None
 
     def _confirm_yes(self):
         callback = self.confirm["on_yes"] if self.confirm else None
@@ -304,6 +307,10 @@ class Game:
                     self.w, self.h = event.w, event.h
                     self.windowed_size = (self.w, self.h)
                     self.screen = pygame.display.set_mode((self.w, self.h), self._window_flags())
+                    self._apply_card_scale()
+                    self._game_over_backdrop = None
+                    self._pause_backdrop = None
+                    self._confirm_backdrop = None
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self.handle_click(event.pos)
             elif (event.type == pygame.MOUSEBUTTONDOWN and
@@ -394,6 +401,7 @@ class Game:
         self._pause_backdrop = None
         self.confirm = None
         self.confirm_rects = []
+        self._confirm_backdrop = None
         self.sound.stop_music()
         self.sound.play_music("lobby")
 
@@ -679,7 +687,7 @@ class Game:
                 continue
             card = player.hand[0]
             px, py = self.player_positions[p_idx]
-            if px <= pos[0] <= px + CARD_WIDTH and py <= pos[1] <= py + CARD_HEIGHT:
+            if px <= pos[0] <= px + Card.card_w() and py <= pos[1] <= py + Card.card_h():
                 hit = card.get_symbol_at_pos(pos[0] - px, pos[1] - py)
                 if hit:
                     sym, index = hit
@@ -762,36 +770,6 @@ class Game:
         self.message_color = color
         self.message_end = pygame.time.get_ticks() + 1600
 
-    def _breath_scale(self, amount=0.03, period=2.2):
-        """Factor de escala (aprox 0.97-1.03) para la animacion de respiracion."""
-        t = pygame.time.get_ticks() / 1000.0
-        return 1.0 + amount * math.sin(t * math.tau / period)
-
-    def _fit_scaled(self, surface, scale):
-        """Devuelve la superficie escalada por `scale` (o la misma si no cambia)."""
-        w, h = surface.get_size()
-        if w == 0 or h == 0:
-            return surface
-        sw = max(1, int(w * scale))
-        sh = max(1, int(h * scale))
-        if (sw, sh) == (w, h):
-            return surface
-        return pygame.transform.smoothscale(surface, (sw, sh))
-
-    def _blit_breathing(self, surface, text_surf, rect, scale):
-        """Dibuja el texto escalado (respirando) centrado en `rect`."""
-        w, h = text_surf.get_size()
-        if w == 0 or h == 0:
-            surface.blit(text_surf, rect)
-            return
-        sw = max(1, int(w * scale))
-        sh = max(1, int(h * scale))
-        if (sw, sh) == (w, h):
-            surface.blit(text_surf, rect)
-            return
-        scaled = pygame.transform.smoothscale(text_surf, (sw, sh))
-        surface.blit(scaled, scaled.get_rect(center=rect.center))
-
     def render(self):
         screen = self.screen
         if self.state == "MENU":
@@ -812,20 +790,10 @@ class Game:
         if self.modal is not None:
             surface = pygame.Surface((self.w, self.h))
             self._draw_settings_screen(surface)
-            screen.blit(self._blur_backdrop(surface), (0, 0))
+            screen.blit(blur_backdrop(surface), (0, 0))
             self._draw_modal(screen)
         else:
             self._draw_settings_screen(screen)
-
-    def _blur_backdrop(self, surface):
-        w, h = surface.get_size()
-        small = pygame.transform.smoothscale(
-            surface, (max(1, w // 8), max(1, h // 8)))
-        blurred = pygame.transform.smoothscale(small, (w, h))
-        veil = pygame.Surface((w, h), pygame.SRCALPHA)
-        veil.fill((0, 0, 0, 130))
-        blurred.blit(veil, (0, 0))
-        return blurred
 
     def _draw_settings_screen(self, screen):
         screen.fill(BG_COLOR)
@@ -869,7 +837,7 @@ class Game:
             selected = idx == int(round(wheel)) % n
             is_edited = editing is not None and idx == self.settings_index
 
-            _, rendered_label = self._render_fitting_text(
+            _, rendered_label = render_fitting_text(
                 row["label"], [22, 20, 18, 16, 14], int(self.w * 0.7),
                 TEXT_SECONDARY)
 
@@ -905,13 +873,13 @@ class Game:
 
             sizes_keys = [FONT_SIZE_GAME, 22, 19, 16, 13]
             sizes_value = [FONT_SIZE_GAME, 22, 19, 16]
-            _, rendered_value = self._render_fitting_text(
+            _, rendered_value = render_fitting_text(
                 value, sizes_keys if row["type"] == "keys" else sizes_value,
                 int(self.w * 0.7), value_color)
 
-            v_scale = scale * self._breath_scale() if selected else scale
-            show_label = self._fit_scaled(rendered_label, scale)
-            show_value = self._fit_scaled(rendered_value, v_scale)
+            v_scale = scale * breathe() if selected else scale
+            show_label = fit_scaled(rendered_label, scale)
+            show_value = fit_scaled(rendered_value, v_scale)
 
             lh = show_label.get_height()
             vh = show_value.get_height()
@@ -932,7 +900,7 @@ class Game:
             self.settings_rects.append((idx, click_rect))
 
         hints = "Arriba/Abajo o W/S: mover   Izq/Der o A/D: cambiar   Enter: editar nombre o teclas   Esc: volver"
-        _, hint = self._render_fitting_text(
+        _, hint = render_fitting_text(
             hints, [16, 15, 14, 13, 12, 11], self.w - 40, TEXT_MUTED)
         screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
 
@@ -941,13 +909,6 @@ class Game:
             self._draw_modal_name(screen)
         elif self.modal == "keys":
             self._draw_modal_keys(screen)
-
-    def _draw_modal_panel(self, screen, w, h):
-        panel_color = tuple(min(255, int(c * 1.08)) for c in BG_PANEL)
-        rect = pygame.Rect((self.w - w) // 2, (self.h - h) // 2, w, h)
-        pygame.draw.rect(screen, panel_color, rect, border_radius=16)
-        pygame.draw.rect(screen, ACCENT_PRIMARY, rect, 3, border_radius=16)
-        return rect
 
     def _draw_modal_buttons(self, screen, panel, labels=("Cancelar", "Aceptar")):
         self.modal_btn_rects = []
@@ -962,45 +923,13 @@ class Game:
             border = ACCENT_ERROR if action == "cancel" else ACCENT_SUCCESS
             pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=10)
             pygame.draw.rect(screen, border, rect, 2, border_radius=10)
-            font, label_surf = self._render_fitting_text(
+            font, label_surf = render_fitting_text(
                 label, [FONT_SIZE_GAME, 22, 19, 16], btn_w - 16, TEXT_PRIMARY)
             screen.blit(label_surf, label_surf.get_rect(center=rect.center))
             self.modal_btn_rects.append((action, rect))
 
-    def _key_display_name(self, key):
-        if not key:
-            return "-"
-        value = key.upper()
-        return _KEY_LABEL_SHORTHAND.get(key.lower().replace(" ", ""), value)
-
-    def _render_fitting_text(self, text, sizes, max_width, color):
-        if not text:
-            font = load_font(sizes[-1])
-            return font, font.render(" ", True, color)
-        ellipsis = "..."
-        for size in sizes:
-            font = load_font(size)
-            if font.size(text)[0] <= max_width:
-                return font, font.render(text, True, color)
-        font = load_font(sizes[-1])
-        ell_surf = font.render(ellipsis, True, color)
-        e_w = ell_surf.get_width()
-        if e_w >= max_width:
-            return font, font.render(text[-1] if len(text) <= 2 else text[:2], True, color)
-        remain = text
-        while remain and font.size(remain)[0] + e_w > max_width:
-            remain = remain[:-1]
-        if not remain:
-            return font, font.render(ellipsis, True, color)
-        body = font.render(remain, True, color)
-        out = pygame.Surface((body.get_width() + e_w, body.get_height()),
-                             pygame.SRCALPHA)
-        out.blit(body, (0, 0))
-        out.blit(ell_surf, (body.get_width(), 0))
-        return font, out
-
     def _draw_modal_keys(self, screen):
-        panel = self._draw_modal_panel(screen, 620, 440)
+        panel = draw_modal_panel(screen, self.w, self.h, 620, 440)
         title_font = load_font(30)
         hint_font = load_font(16)
         player_num = 1 if self.editing == "p1_keys" else 2
@@ -1031,8 +960,8 @@ class Game:
                                  3 if slot_counter == self.editing_step else 2,
                                  border_radius=12)
                 key = keys[slot_counter]
-                label = self._key_display_name(key)
-                font, key_surf = self._render_fitting_text(
+                label = key_display_name(key)
+                font, key_surf = render_fitting_text(
                     label, [28, 24, 20, 16, 13], cell - 14, TEXT_PRIMARY)
                 screen.blit(key_surf, key_surf.get_rect(center=rect.center))
                 slot_counter += 1
@@ -1050,7 +979,7 @@ class Game:
         screen.blit(esc_note, esc_note.get_rect(center=(panel.centerx, panel.bottom - 58)))
 
     def _draw_modal_name(self, screen):
-        panel = self._draw_modal_panel(screen, 560, 250)
+        panel = draw_modal_panel(screen, self.w, self.h, 560, 250)
         title_font = load_font(30)
         name_font = load_font(FONT_SIZE_MESSAGE)
         hint_font = load_font(16)
@@ -1068,7 +997,7 @@ class Game:
         label_surf = hint_font.render(label, True, TEXT_SECONDARY)
         screen.blit(label_surf, label_surf.get_rect(center=(panel.centerx, panel.top + 92)))
 
-        name_font, name_surf = self._render_fitting_text(
+        name_font, name_surf = render_fitting_text(
             name, [FONT_SIZE_MESSAGE, 30, 24, 20, 16], panel.w - 120, ACCENT_WARNING)
         text_rect = name_surf.get_rect(center=(panel.centerx, panel.top + 138))
         box = text_rect.inflate(40, 18)
@@ -1108,23 +1037,23 @@ class Game:
         for index, (label, _) in enumerate(self.menu_options):
             selected = index == self.menu_index
             color = ACCENT_PRIMARY if selected else TEXT_SECONDARY
-            _, rendered = self._render_fitting_text(
+            _, rendered = render_fitting_text(
                 label, [FONT_SIZE_MENU, 32, 28, 24, 20, 16],
                 min(int(self.w * 0.7), 700), color)
             rect = rendered.get_rect(center=(center_x, start_y + index * option_h))
             if selected:
-                self._blit_breathing(screen, rendered, rect, self._breath_scale())
+                blit_breathing(screen, rendered, rect, breathe())
             else:
                 screen.blit(rendered, rect)
             self.menu_rects.append(rect)
 
         hints = "Arriba/Abajo o W/S: mover   Enter/Espacio: elegir   Esc: salir"
-        _, hint = self._render_fitting_text(
+        _, hint = render_fitting_text(
             hints, [16, 15, 14, 13, 12, 11], self.w - 40, TEXT_MUTED)
         screen.blit(hint, hint.get_rect(center=(center_x, self.h - 50)))
 
         if self.menu_msg and pygame.time.get_ticks() < self.menu_msg_end:
-            _, msg = self._render_fitting_text(
+            _, msg = render_fitting_text(
                 self.menu_msg, [FONT_SIZE_SMALL, 18, 16, 14], self.w - 40, ACCENT_WARNING)
             screen.blit(msg, msg.get_rect(center=(center_x, self.h - 90)))
 
@@ -1133,18 +1062,18 @@ class Game:
         self._draw_stats_panel(screen)
         self._draw_timer(screen)
         if self.center_card:
-            play_left = SCORE_PANEL_WIDTH
+            play_left = self.panel_w
             play_w = self.w - play_left
-            cx = play_left + play_w // 2 - CARD_WIDTH // 2
+            cx = play_left + play_w // 2 - Card.card_w() // 2
             cy = 70
             self.center_card_pos = (cx, cy)
-            py = cy + CARD_HEIGHT + 70
+            py = cy + Card.card_h() + 70
             if self.mode == "local":
                 left_cx = play_left + int(play_w * 0.28)
                 right_cx = play_left + int(play_w * 0.72)
                 self.player_positions = [
-                    (left_cx - CARD_WIDTH // 2, py),
-                    (right_cx - CARD_WIDTH // 2, py),
+                    (left_cx - Card.card_w() // 2, py),
+                    (right_cx - Card.card_w() // 2, py),
                 ]
             else:
                 self.player_positions = [(cx, py)]
@@ -1170,23 +1099,10 @@ class Game:
         if self.game_over:
             self._draw_game_over(screen)
 
-    @staticmethod
-    def _ease_out_cubic(t):
-        t = max(0.0, min(1.0, t))
-        return 1.0 - (1.0 - t) ** 3
-
-    @staticmethod
-    def _ease_out_back(t):
-        t = max(0.0, min(1.0, t))
-        c1 = 1.70158
-        c3 = c1 + 1.0
-        t -= 1.0
-        return 1.0 + c3 * t ** 3 + c1 * t ** 2
-
     def _blit_intro_card(self, screen, card, final_center, offset, angle0, e):
         scale = max(0.12, 0.12 + 0.88 * e)
-        w = max(2, int(CARD_WIDTH * scale))
-        h = max(2, int(CARD_HEIGHT * scale))
+        w = max(2, int(Card.card_w() * scale))
+        h = max(2, int(Card.card_h() * scale))
         img = pygame.transform.smoothscale(card.to_surface(), (w, h))
         angle = angle0 * (1.0 - e)
         if angle:
@@ -1199,83 +1115,72 @@ class Game:
         if self.intro_t * 1000 < INTRO_GO_MS:
             return
         local = min(1.0, (self.intro_t * 1000 - INTRO_GO_MS) / INTRO_ENTRY_MS)
-        e = self._ease_out_back(local)
+        e = ease_out_back(local)
+        k = Card.card_w() / 200.0
         cx, cy = self.center_card_pos
         self._blit_intro_card(
             screen, self.center_card,
-            (cx + CARD_WIDTH // 2, cy + CARD_HEIGHT // 2), (0, -150), -14, e)
+            (cx + Card.card_w() // 2, cy + Card.card_h() // 2),
+            (int(0 * k), int(-150 * k)), -14, e)
         if self.mode == "local":
-            offsets = [(-330, 130), (330, 130)]
+            offsets = [(int(-330 * k), int(130 * k)), (int(330 * k), int(130 * k))]
             angles = [12, -12]
         else:
-            offsets = [(0, 170)]
+            offsets = [(0, int(170 * k))]
             angles = [14]
         for idx, (ox, oy) in enumerate(offsets):
             if idx < len(self.players) and self.players[idx].hand:
                 px, pyy = self.player_positions[idx]
                 self._blit_intro_card(
                     screen, self.players[idx].hand[0],
-                    (px + CARD_WIDTH // 2, pyy + CARD_HEIGHT // 2),
+                    (px + Card.card_w() // 2, pyy + Card.card_h() // 2),
                     (ox, oy), angles[idx], e)
 
     def _draw_center_ring(self, screen, cx, cy):
         """Anillo pulsante sobre la carta central: senala el objetivo de la
         partida (ayuda a la concentracion)."""
-        b = self._breath_scale(0.2, 1.6)
+        b = breathe(0.2, 1.6)
         pad = int(6 + 9 * (b - 0.8) / 0.4)
         alpha = int(110 + 130 * (b - 0.8) / 0.4)
-        rw, rh = CARD_WIDTH + 2 * pad, CARD_HEIGHT + 2 * pad
+        rw, rh = Card.card_w() + 2 * pad, Card.card_h() + 2 * pad
         ring = pygame.Surface((rw, rh), pygame.SRCALPHA)
         pygame.draw.rect(ring, (*ACCENT_PRIMARY, alpha),
                          ring.get_rect(), 3, border_radius=14)
         screen.blit(ring, (cx - pad, cy - pad))
 
-    def _scaled_text(self, text, base_size, scale, color, alpha=255):
-        """Renderiza texto y lo escala/altera alpha en una sola ayuda."""
-        surf = load_font(base_size).render(text, True, color)
-        if surf.get_width() == 0 or surf.get_height() == 0:
-            return surf
-        w = max(1, int(surf.get_width() * scale))
-        h = max(1, int(surf.get_height() * scale))
-        if (w, h) != (surf.get_width(), surf.get_height()):
-            surf = pygame.transform.smoothscale(surf, (w, h))
-        if alpha < 255:
-            surf.set_alpha(alpha)
-        return surf
-
     def _draw_intro_effects(self, screen):
         t = self.intro_t
         cx, cy = self.center_card_pos
-        center = (cx + CARD_WIDTH // 2, cy + CARD_HEIGHT // 2)
-        anchor_y = cy + CARD_HEIGHT + 40
+        center = (cx + Card.card_w() // 2, cy + Card.card_h() // 2)
+        anchor_y = cy + Card.card_h() + 40
         overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
         if t * 1000 < INTRO_GO_MS:
             idx = min(2, int(t * 1000 / INTRO_NUMBER_MS))
             label = ("3", "2", "1")[idx]
             local = (t * 1000 - idx * INTRO_NUMBER_MS) / INTRO_NUMBER_MS
             appear = min(1.0, local * 4.0)
-            scale = 1.0 + 0.6 * (1.0 - self._ease_out_cubic(appear))
+            scale = 1.0 + 0.6 * (1.0 - ease_out_cubic(appear))
             alpha = 255
             if local > 0.45:
                 alpha = int(255 * max(0.0, 1.0 - (local - 0.45) / 0.25))
-            txt = self._scaled_text(label, 130, scale, ACCENT_PRIMARY, alpha)
+            txt = scaled_text(label, 130, scale, ACCENT_PRIMARY, alpha)
             overlay.blit(txt, txt.get_rect(center=(center[0], anchor_y)))
         else:
             ring_t = min(1.0, (t * 1000 - INTRO_GO_MS) / 700.0)
-            max_r = CARD_WIDTH // 2 + 60
+            max_r = Card.card_w() // 2 + 60
             for rt, color in [(ring_t, ACCENT_PRIMARY),
                               (max(0.0, ring_t - 0.3), ACCENT_SUCCESS)]:
                 if rt > 0:
-                    radius = int(30 + (max_r - 30) * self._ease_out_cubic(rt))
+                    radius = int(30 + (max_r - 30) * ease_out_cubic(rt))
                     alpha = int(230 * (1.0 - rt))
                     pygame.draw.circle(overlay, (*color, alpha), center, radius, 4)
             go = (t * 1000 - INTRO_GO_MS) / INTRO_ENTRY_MS
             appear = min(1.0, go * 2.2)
-            scale = 0.6 + 0.5 * self._ease_out_back(appear)
+            scale = 0.6 + 0.5 * ease_out_back(appear)
             alpha = 255
             if go > 0.62:
                 alpha = int(255 * max(0.0, 1.0 - (go - 0.62) / 0.08))
-            txt = self._scaled_text("¡YA!", 120, scale, ACCENT_SUCCESS, alpha)
+            txt = scaled_text("¡YA!", 120, scale, ACCENT_SUCCESS, alpha)
             overlay.blit(txt, txt.get_rect(center=(center[0], anchor_y)))
         screen.blit(overlay, (0, 0))
 
@@ -1295,7 +1200,7 @@ class Game:
         else:
             color = TEXT_PRIMARY
 
-        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
+        center_x = self.panel_w + (self.w - self.panel_w) // 2
         rendered = font.render(text, True, color)
         rect = rendered.get_rect(center=(center_x, 34))
 
@@ -1316,16 +1221,16 @@ class Game:
         pygame.draw.rect(screen, BORDER, bar, 1, border_radius=4)
 
     def _draw_stats_panel(self, screen):
-        panel = pygame.Rect(0, 0, SCORE_PANEL_WIDTH, self.h)
+        panel = pygame.Rect(0, 0, self.panel_w, self.h)
         pygame.draw.rect(screen, BG_SECONDARY, panel)
-        pygame.draw.line(screen, BORDER, (SCORE_PANEL_WIDTH - 1, 0),
-                         (SCORE_PANEL_WIDTH - 1, self.h), 2)
+        pygame.draw.line(screen, BORDER, (self.panel_w - 1, 0),
+                         (self.panel_w - 1, self.h), 2)
 
         title_font = load_font(18)
         label_font = load_font(FONT_SIZE_SMALL)
         value_font = load_font(FONT_SIZE_SCORE)
 
-        center_x = SCORE_PANEL_WIDTH // 2
+        center_x = self.panel_w // 2
 
         def center_text(surface, text, y, font, color):
             rendered = font.render(text, True, color)
@@ -1345,7 +1250,7 @@ class Game:
                 center_text(screen, "Fallos", base_y + 126, label_font, TEXT_SECONDARY)
                 center_text(screen, str(player.incorrect), base_y + 150, value_font, ACCENT_ERROR)
                 pygame.draw.line(screen, BORDER, (20, base_y + 170),
-                                 (SCORE_PANEL_WIDTH - 20, base_y + 170), 1)
+                                 (self.panel_w - 20, base_y + 170), 1)
 
             player_section(self.players[0], 100)
             player_section(self.players[1], 320)
@@ -1358,14 +1263,14 @@ class Game:
         center_text(screen, str(player.score), 96, value_font, TEXT_PRIMARY)
 
         panel_line = 130
-        pygame.draw.line(screen, BORDER, (20, panel_line), (SCORE_PANEL_WIDTH - 20, panel_line), 1)
+        pygame.draw.line(screen, BORDER, (20, panel_line), (self.panel_w - 20, panel_line), 1)
 
         center_text(screen, "Correctas", 156, label_font, TEXT_SECONDARY)
         center_text(screen, str(player.correct), 180, value_font, ACCENT_SUCCESS)
         center_text(screen, "Fallos", 216, label_font, TEXT_SECONDARY)
         center_text(screen, str(player.incorrect), 240, value_font, ACCENT_ERROR)
 
-        pygame.draw.line(screen, BORDER, (20, panel_line + 130), (SCORE_PANEL_WIDTH - 20, panel_line + 130), 1)
+        pygame.draw.line(screen, BORDER, (20, panel_line + 130), (self.panel_w - 20, panel_line + 130), 1)
 
         center_text(screen, "Mazo", 296, label_font, TEXT_SECONDARY)
         center_text(screen, str(self.deck.remaining()), 320, value_font, TEXT_PRIMARY)
@@ -1373,6 +1278,7 @@ class Game:
     def _draw_feedback(self, screen):
         if not self.feedback:
             return
+        sym_size = Card.symbol_size()
         now = pygame.time.get_ticks()
         active = []
         for fb in self.feedback:
@@ -1388,11 +1294,11 @@ class Game:
             kind = fb["kind"]
             color = ACCENT_SUCCESS if kind in ("correct", "hint") else ACCENT_ERROR
             x, y = fb["pos"]
-            radius = SYMBOL_SIZE // 2 + int((SYMBOL_SIZE + 24) * t)
+            radius = sym_size // 2 + int((sym_size + 24) * t)
             alpha = int(255 * (1 - t))
             width = max(3, int(7 * (1 - t)) + 2)
 
-            inner = int(SYMBOL_SIZE // 2 * (0.5 + 0.5 * t))
+            inner = int(sym_size // 2 * (0.5 + 0.5 * t))
             pygame.draw.circle(glow, (color[0], color[1], color[2], 70), (x, y), inner)
 
             if kind in ("correct", "incorrect"):
@@ -1400,7 +1306,7 @@ class Game:
                 ring2_r = int(radius * 0.6)
                 pygame.draw.circle(glow, (color[0], color[1], color[2], int(alpha * 0.5)), (x, y), ring2_r, max(1, width // 2))
             else:
-                half = int(SYMBOL_SIZE * (0.4 + 0.5 * t))
+                half = int(sym_size * (0.4 + 0.5 * t))
                 pygame.draw.circle(glow, (color[0], color[1], color[2], alpha), (x, y), half, 4)
         screen.blit(glow, (0, 0))
 
@@ -1412,14 +1318,14 @@ class Game:
             return
         font = load_font(FONT_SIZE_MESSAGE)
 
-        gap_top = self.center_card_pos[1] + CARD_HEIGHT
+        gap_top = self.center_card_pos[1] + Card.card_h()
         gap_bottom = self.player_positions[0][1] if self.player_positions else 0
         if gap_bottom <= gap_top:
             gap_top = 80
             gap_bottom = self.h - 80
         my = (gap_top + gap_bottom) // 2
 
-        max_width = self.w - SCORE_PANEL_WIDTH - 60
+        max_width = self.w - self.panel_w - 60
         lines = []
         current = ""
         for word in self.message.split():
@@ -1436,7 +1342,7 @@ class Game:
         line_h = font.get_height() + 6
         height = line_h * len(lines)
         width = max(font.size(line)[0] for line in lines) + 40
-        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
+        center_x = self.panel_w + (self.w - self.panel_w) // 2
 
         fade = 1.0
         remaining = self.message_end - now
@@ -1461,7 +1367,7 @@ class Game:
         now = pygame.time.get_ticks()
         elapsed = (now - self.game_over_start) / 1000.0
         enter = min(1.0, elapsed / 0.40)
-        panel_scale = 0.74 + 0.26 * self._ease_out_back(enter)
+        panel_scale = 0.74 + 0.26 * ease_out_back(enter)
 
         pw = min(760, self.w - 100)
         ph = 470 if self.mode == "local" else 440
@@ -1479,7 +1385,7 @@ class Game:
         self._fill_game_over_panel(panel, elapsed, pw, ph, panel_mouse)
 
         if self._game_over_backdrop is None:
-            self._game_over_backdrop = self._blur_backdrop(screen.copy())
+            self._game_over_backdrop = blur_backdrop(screen.copy())
         screen.blit(self._game_over_backdrop, (0, 0))
 
         sw = max(1, int(pw * panel_scale))
@@ -1506,7 +1412,7 @@ class Game:
         value_font = load_font(30)
         small_font = load_font(16)
         cx = pw // 2
-        count = self._ease_out_cubic(min(1.0, elapsed / 0.8))
+        count = ease_out_cubic(min(1.0, elapsed / 0.8))
 
         if self.mode == "local":
             max_score = max(p.score for p in self.players)
@@ -1522,8 +1428,8 @@ class Game:
                 title_color = ACCENT_WARNING
                 winner = None
 
-            rendered = self._fit_scaled(title_font.render(title, True, title_color),
-                                        self._breath_scale(0.02, 1.6))
+            rendered = fit_scaled(title_font.render(title, True, title_color),
+                                        breathe(0.02, 1.6))
             panel.blit(rendered, rendered.get_rect(center=(cx, 58)))
             self._panel_separator(panel, cx, 100, pw)
 
@@ -1559,9 +1465,9 @@ class Game:
         total = player.correct + player.incorrect
         precision = (player.correct / total * 100) if total else 0.0
 
-        title = self._fit_scaled(
+        title = fit_scaled(
             title_font.render("FIN DE PARTIDA", True, ACCENT_PRIMARY),
-            self._breath_scale(0.02, 1.8))
+            breathe(0.02, 1.8))
         panel.blit(title, title.get_rect(center=(cx, 58)))
         self._panel_separator(panel, cx, 100, pw)
 
@@ -1606,22 +1512,22 @@ class Game:
                              border_radius=10)
             pygame.draw.rect(panel, color, rect, 3 if hovered else 2,
                              border_radius=10)
-            _, text = self._render_fitting_text(label, [22, 20, 18, 16],
+            _, text = render_fitting_text(label, [22, 20, 18, 16],
                                                 btn_w - 16, TEXT_PRIMARY)
             panel.blit(text, text.get_rect(center=rect.center))
             self._game_over_rects_local.append((action, rect.copy()))
 
     def _draw_pause(self, screen):
         if self._pause_backdrop is None:
-            self._pause_backdrop = self._blur_backdrop(screen)
+            self._pause_backdrop = blur_backdrop(screen)
         screen.blit(self._pause_backdrop, (0, 0))
 
         pw = min(520, self.w - 100)
         ph = 410
-        panel = self._draw_modal_panel(screen, pw, ph)
-        title = self._fit_scaled(
+        panel = draw_modal_panel(screen, self.w, self.h, pw, ph)
+        title = fit_scaled(
             load_font(40).render("PAUSA", True, ACCENT_PRIMARY),
-            self._breath_scale(0.02, 1.8))
+            breathe(0.02, 1.8))
         screen.blit(title, title.get_rect(center=(panel.centerx, panel.top + 62)))
         hint = load_font(15).render("Esc: reanudar", True, TEXT_MUTED)
         screen.blit(hint, hint.get_rect(center=(panel.centerx, panel.top + 104)))
@@ -1640,7 +1546,7 @@ class Game:
                              border_radius=10)
             pygame.draw.rect(screen, colors[i], rect, 3 if selected else 2,
                              border_radius=10)
-            _, text = self._render_fitting_text(label, [24, 21, 18],
+            _, text = render_fitting_text(label, [24, 21, 18],
                                                 btn_w - 20, TEXT_PRIMARY)
             screen.blit(text, text.get_rect(center=rect.center))
             self.pause_rects.append(rect)
@@ -1649,19 +1555,21 @@ class Game:
         elapsed = pygame.time.get_ticks() - self.resuming_start
         idx = min(2, elapsed // RESUME_STEP_MS)
         local = (elapsed % RESUME_STEP_MS) / RESUME_STEP_MS
-        scale = 0.7 + 0.5 * self._ease_out_cubic(local)
+        scale = 0.7 + 0.5 * ease_out_cubic(local)
         veil = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
         veil.fill((0, 0, 0, 90))
         screen.blit(veil, (0, 0))
-        number = self._fit_scaled(
+        number = fit_scaled(
             load_font(120).render(str(3 - idx), True, ACCENT_PRIMARY), scale)
         screen.blit(number, number.get_rect(center=(self.w // 2, self.h // 2)))
 
     def _draw_confirm(self, screen):
-        screen.blit(self._blur_backdrop(screen), (0, 0))
+        if self._confirm_backdrop is None:
+            self._confirm_backdrop = blur_backdrop(screen)
+        screen.blit(self._confirm_backdrop, (0, 0))
         pw, ph = 600, 250
-        panel = self._draw_modal_panel(screen, pw, ph)
-        _, text = self._render_fitting_text(
+        panel = draw_modal_panel(screen, self.w, self.h, pw, ph)
+        _, text = render_fitting_text(
             self.confirm["message"], [30, 26, 22, 18], pw - 60, TEXT_PRIMARY)
         screen.blit(text, text.get_rect(center=(panel.centerx, panel.top + 72)))
 
@@ -1676,16 +1584,16 @@ class Game:
             rect = pygame.Rect(x0 + i * (btn_w + gap), by, btn_w, btn_h)
             selected = (i == self.confirm_index) or rect.collidepoint(mouse)
             base = tuple(min(255, int(c * 1.25)) for c in BG_SECONDARY)
-            _, lab = self._render_fitting_text(label, [26, 22, 19],
+            _, lab = render_fitting_text(label, [26, 22, 19],
                                                btn_w - 16, TEXT_PRIMARY)
             if selected:
-                scale = self._breath_scale(0.05, 1.4)
+                scale = breathe(0.05, 1.4)
                 btn = pygame.Surface((btn_w, btn_h), pygame.SRCALPHA)
                 bbox = btn.get_rect()
                 pygame.draw.rect(btn, base, bbox, border_radius=10)
                 pygame.draw.rect(btn, color, bbox, 3, border_radius=10)
                 btn.blit(lab, lab.get_rect(center=bbox.center))
-                shown = self._fit_scaled(btn, scale)
+                shown = fit_scaled(btn, scale)
                 screen.blit(shown, shown.get_rect(center=rect.center))
             else:
                 pygame.draw.rect(screen, BG_SECONDARY, rect, border_radius=10)
