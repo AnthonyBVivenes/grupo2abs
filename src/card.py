@@ -9,6 +9,7 @@ from constants import (
     RED, ACCENT_SUCCESS, ACCENT_ERROR, ACCENT_INFO, ACCENT_WARNING,
     HIGHLIGHT, PALE_YELLOW
 )
+from fonts import load_font
 
 class Card:
     # --- Cachés y estado compartido (clase, no instancia) ---
@@ -212,7 +213,7 @@ class Card:
 
     def _draw_key_label(self, surface, cx, cy, label, symbol_size):
         """Dibuja la etiqueta de tecla encima del símbolo."""
-        font = pygame.font.Font(None, max(18, symbol_size // 2))
+        font = load_font(max(14, symbol_size // 3))
         text = font.render(label.upper(), True, (255, 255, 255))
         # Fondo semitransparente para legibilidad
         bg_rect = text.get_rect(center=(cx, cy - symbol_size // 2 - 8))
