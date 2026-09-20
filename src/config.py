@@ -17,6 +17,23 @@ DEFAULT_CONFIG = {
 }
 
 
+def _clean_key(value):
+    """Limpia el nombre de una tecla: quita corchetes raros (p.ej. '[1]' -> '1')."""
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if len(value) >= 2 and value.startswith("[") and value.endswith("]") \
+            and value[1:-1].strip().isalnum():
+        value = value[1:-1].strip()
+    return value.upper()
+
+
+def normalize_key(value):
+    """Tecla normalizada tal y como se guarda/usa en el juego."""
+    cleaned = _clean_key(value)
+    return cleaned.upper() if cleaned else cleaned
+
+
 class Config:
     def __init__(self):
         self.data = dict(DEFAULT_CONFIG)
@@ -28,7 +45,10 @@ class Config:
                 loaded = json.load(f)
             for key in DEFAULT_CONFIG:
                 if key in loaded:
-                    self.data[key] = loaded[key]
+                    if key in ("p1_keys", "p2_keys"):
+                        self.data[key] = [normalize_key(v) for v in loaded[key]]
+                    else:
+                        self.data[key] = loaded[key]
         except (OSError, ValueError):
             pass
 
@@ -43,4 +63,6 @@ class Config:
         return self.data[key]
 
     def __setitem__(self, key, value):
+        if key in ("p1_keys", "p2_keys"):
+            value = [normalize_key(v) for v in value]
         self.data[key] = value

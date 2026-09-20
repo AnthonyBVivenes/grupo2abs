@@ -5,7 +5,7 @@ import pygame
 
 from card import Card
 from constants import *
-from config import Config, DEFAULT_CONFIG
+from config import Config, DEFAULT_CONFIG, normalize_key
 from deck import Deck
 from fonts import load_font
 from player import Player
@@ -302,7 +302,7 @@ class Game:
     def _assign_key(self, coded_name):
         row = self.settings_rows[self.settings_index]
         key_name = row["key"]
-        new_key = coded_name.upper() if coded_name else ""
+        new_key = normalize_key(coded_name)
         if not new_key:
             return
         keys = self.config[key_name]
@@ -382,7 +382,9 @@ class Game:
     def _handle_local_input(self, key_name):
         if not key_name:
             return
-        key_name = key_name.upper()
+        key_name = normalize_key(key_name)
+        if not key_name:
+            return
         if pygame.time.get_ticks() < self.lock_until:
             return
         for p_idx, player in enumerate(self.players):
