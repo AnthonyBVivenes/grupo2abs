@@ -15,6 +15,12 @@ from sound import SoundManager
 P1_KEYS = list(DEFAULT_CONFIG["p1_keys"])
 P2_KEYS = list(DEFAULT_CONFIG["p2_keys"])
 INPUT_LOCK_MS = 300
+INTRO_NUMBER_MS = 700
+INTRO_GO_MS = 2100
+INTRO_END_MS = 2700
+INTRO_LOOP_FADE_MS = 2000
+INTRO_LOOP_OVERLAP_MS = 1000
+INTRO_ENTRY_MS = 550
 SYMBOL_SIZES = {"small": 40, "normal": 50, "large": 60}
 
 _KEY_LABEL_SHORTHAND = {
@@ -137,8 +143,12 @@ class Game:
         self.player_positions = [(0, 0) for _ in self.players]
         self.lock_until = 0
         self.state = "PLAYING"
-        self.sound.play_effect("start")
-        self.sound.play_music("game")
+        self.intro = True
+        self.intro_start = pygame.time.get_ticks()
+        self.intro_t = 0.0
+        self.intro_tick = -1
+        self.intro_go = False
+        self.sound.fade_out_music(400)
 
     def _names(self):
         names = list(self.config["player_names"])
@@ -219,6 +229,7 @@ class Game:
                   and self.modal is None):
                 delta = -1 if event.button == 4 else 1
                 self.settings_index = (self.settings_index + delta) % len(self.settings_rows)
+                self.sound.play_effect("navigate")
             elif event.type == pygame.KEYDOWN:
                 self.handle_key(event.key)
 
@@ -229,9 +240,12 @@ class Game:
         if self.state == "MENU":
             if key in (pygame.K_UP, pygame.K_w):
                 self.menu_index = (self.menu_index - 1) % len(self.menu_options)
+                self.sound.play_effect("navigate")
             elif key in (pygame.K_DOWN, pygame.K_s):
                 self.menu_index = (self.menu_index + 1) % len(self.menu_options)
+                self.sound.play_effect("navigate")
             elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
+                self.sound.play_effect("select")
                 _, callback = self.menu_options[self.menu_index]
                 callback()
             elif key == pygame.K_ESCAPE:
@@ -284,13 +298,16 @@ class Game:
 
         if key in (pygame.K_UP, pygame.K_w):
             self.settings_index = (self.settings_index - 1) % len(rows)
+            self.sound.play_effect("navigate")
         elif key in (pygame.K_DOWN, pygame.K_s):
             self.settings_index = (self.settings_index + 1) % len(rows)
+            self.sound.play_effect("navigate")
         elif key in (pygame.K_LEFT, pygame.K_a):
             self._change_setting(-1)
         elif key in (pygame.K_RIGHT, pygame.K_d):
             self._change_setting(1)
         elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.sound.play_effect("select")
             if row["type"] == "text":
                 self.editing = "player_names"
                 self.modal = "name"
@@ -320,10 +337,12 @@ class Game:
         if (new_key in bound or new_key in self._other_player_keys(key_name)):
             self.settings_key_msg = "Tecla ya usada"
             self.settings_key_msg_end = pygame.time.get_ticks() + 1800
+            self.sound.play_effect("error")
             return
         keys[self.editing_step] = new_key
         self.config[key_name] = keys
         self.editing_step += 1
+        self.sound.play_effect("navigate")
         if self.editing_step >= 8:
             self._accept_key_edit()
 
@@ -333,6 +352,7 @@ class Game:
         self.editing = None
         self.editing_step = 0
         self._keys_backup = None
+        self.sound.play_effect("select")
 
     def _cancel_key_edit(self):
         key_name = self.editing
@@ -343,12 +363,14 @@ class Game:
         self.editing_step = 0
         self.settings_key_msg = ""
         self._keys_backup = None
+        self.sound.play_effect("select")
 
     def _accept_name_edit(self):
         self.config.save()
         self.modal = None
         self.editing = None
         self._name_before = None
+        self.sound.play_effect("select")
 
     def _cancel_name_edit(self):
         if self._name_before is not None:
@@ -356,6 +378,7 @@ class Game:
         self.modal = None
         self.editing = None
         self._name_before = None
+        self.sound.play_effect("select")
 
     def _handle_modal_click(self, pos):
         for action, rect in self.modal_btn_rects:
@@ -388,6 +411,7 @@ class Game:
         if apply:
             apply()
         self.config.save()
+        self.sound.play_effect("navigate")
 
     def _handle_local_input(self, key_name):
         if not key_name:
@@ -396,6 +420,8 @@ class Game:
         if not key_name:
             return
         if pygame.time.get_ticks() < self.lock_until:
+            return
+        if self.intro:
             return
         for p_idx, player in enumerate(self.players):
             if not player.hand:
@@ -414,6 +440,7 @@ class Game:
                 return
 
     def update(self):
+        self.sound.update()
         if self.state == "SETTINGS":
             n = len(self.settings_rows)
             target = self.settings_index + n * round(
@@ -423,12 +450,30 @@ class Game:
                 self.settings_wheel = float(target)
                 self.settings_index = target % n
         if self.state == "PLAYING" and not self.game_over:
-            limit = self.config["time_limit"]
-            if limit > 0:
-                elapsed = (pygame.time.get_ticks() - self.game_start) / 1000
-                self.time_left = max(0.0, limit - elapsed)
-                if self.time_left <= 0:
-                    self._end_game()
+            if self.intro:
+                now = pygame.time.get_ticks()
+                self.intro_t = (now - self.intro_start) / 1000.0
+                idx = int(self.intro_t * 1000 / INTRO_NUMBER_MS)
+                if idx != self.intro_tick and idx < 3:
+                    self.intro_tick = idx
+                    self.sound.play_effect("coincidence", volume=0.18)
+                if not self.intro_go and now - self.intro_start >= INTRO_GO_MS:
+                    self.intro_go = True
+                    self.sound.play_effect("start")
+                    jingle_ms = self.sound.effect_length("start") * 1000
+                    delay = max(0.0, jingle_ms - INTRO_LOOP_OVERLAP_MS)
+                    self.sound.fade_in_music(
+                        "game", fade_ms=INTRO_LOOP_FADE_MS, delay_ms=delay)
+                if now - self.intro_start >= INTRO_END_MS:
+                    self.intro = False
+                    self.game_start = now
+            else:
+                limit = self.config["time_limit"]
+                if limit > 0:
+                    elapsed = (pygame.time.get_ticks() - self.game_start) / 1000
+                    self.time_left = max(0.0, limit - elapsed)
+                    if self.time_left <= 0:
+                        self._end_game()
 
     def handle_click(self, pos):
         if self.state == "SETTINGS":
@@ -438,17 +483,21 @@ class Game:
             for index, rect in self.settings_rects:
                 if rect and rect.collidepoint(pos):
                     self.settings_index = index
+                    self.sound.play_effect("navigate")
                     return
             return
         if self.state == "MENU":
             for index, rect in enumerate(self.menu_rects):
                 if rect.collidepoint(pos):
                     self.menu_index = index
+                    self.sound.play_effect("select")
                     _, callback = self.menu_options[index]
                     callback()
                     return
             return
         if self.game_over:
+            return
+        if self.intro:
             return
         if self.mode == "local" and pygame.time.get_ticks() < self.lock_until:
             return
@@ -545,6 +594,8 @@ class Game:
     def _fit_scaled(self, surface, scale):
         """Devuelve la superficie escalada por `scale` (o la misma si no cambia)."""
         w, h = surface.get_size()
+        if w == 0 or h == 0:
+            return surface
         sw = max(1, int(w * scale))
         sh = max(1, int(h * scale))
         if (sw, sh) == (w, h):
@@ -554,8 +605,11 @@ class Game:
     def _blit_breathing(self, surface, text_surf, rect, scale):
         """Dibuja el texto escalado (respirando) centrado en `rect`."""
         w, h = text_surf.get_size()
-        sw = int(w * scale)
-        sh = int(h * scale)
+        if w == 0 or h == 0:
+            surface.blit(text_surf, rect)
+            return
+        sw = max(1, int(w * scale))
+        sh = max(1, int(h * scale))
         if (sw, sh) == (w, h):
             surface.blit(text_surf, rect)
             return
@@ -746,14 +800,17 @@ class Game:
         # texto más fino pero legible. Reduce la lista si quieres menos
         # escalones (p. ej. [38, 30, 22]) o agranda `max_w` para dar
         # más margen antes de recortar el texto.
+        if not text:
+            # Renderizar un espacio: una superficie de ancho 0 hace que
+            # pygame.transform.smoothscale provoque un fallo (segfault).
+            font = load_font(sizes[-1])
+            return font, font.render(" ", True, color)
         ellipsis = "..."
         for size in sizes:
             font = load_font(size)
             if font.size(text)[0] <= max_w:
                 return font, font.render(text, True, color)
         font = load_font(sizes[-1])
-        if not text:
-            return font, font.render("", True, color)
         ell_surf = font.render(ellipsis, True, color)
         e_w = ell_surf.get_width()
         if e_w >= max_w:
@@ -909,7 +966,6 @@ class Game:
             cx = play_left + play_w // 2 - CARD_WIDTH // 2
             cy = 70
             self.center_card_pos = (cx, cy)
-            self.center_card.draw(screen, cx, cy)
             py = cy + CARD_HEIGHT + 70
             if self.mode == "local":
                 left_cx = play_left + int(play_w * 0.28)
@@ -927,16 +983,119 @@ class Game:
                         card.set_key_labels(self.config["p1_keys"] if p_idx == 0 else self.config["p2_keys"])
                     else:
                         card.set_key_labels([])
-                    px, pyy = self.player_positions[p_idx]
-                    card.draw(screen, px, pyy)
+            if self.intro:
+                self._draw_intro_cards(screen)
+            else:
+                self.center_card.draw(screen, cx, cy)
+                for p_idx, player in enumerate(self.players):
+                    if player.hand and p_idx < len(self.player_positions):
+                        player.hand[0].draw(screen, *self.player_positions[p_idx])
+            if self.intro:
+                self._draw_intro_effects(screen)
         self._draw_feedback(screen)
         self._draw_message(screen)
         if self.game_over:
             self._draw_game_over(screen)
         pygame.display.flip()
 
+    @staticmethod
+    def _ease_out_cubic(t):
+        t = max(0.0, min(1.0, t))
+        return 1.0 - (1.0 - t) ** 3
+
+    @staticmethod
+    def _ease_out_back(t):
+        t = max(0.0, min(1.0, t))
+        c1 = 1.70158
+        c3 = c1 + 1.0
+        t -= 1.0
+        return 1.0 + c3 * t ** 3 + c1 * t ** 2
+
+    def _blit_intro_card(self, screen, card, final_center, offset, angle0, e):
+        scale = max(0.12, 0.12 + 0.88 * e)
+        w = max(2, int(CARD_WIDTH * scale))
+        h = max(2, int(CARD_HEIGHT * scale))
+        img = pygame.transform.smoothscale(card.to_surface(), (w, h))
+        angle = angle0 * (1.0 - e)
+        if angle:
+            img = pygame.transform.rotate(img, angle)
+        x = final_center[0] + int(offset[0] * (1.0 - e))
+        y = final_center[1] + int(offset[1] * (1.0 - e))
+        screen.blit(img, img.get_rect(center=(x, y)))
+
+    def _draw_intro_cards(self, screen):
+        if self.intro_t * 1000 < INTRO_GO_MS:
+            return
+        local = min(1.0, (self.intro_t * 1000 - INTRO_GO_MS) / INTRO_ENTRY_MS)
+        e = self._ease_out_back(local)
+        cx, cy = self.center_card_pos
+        self._blit_intro_card(
+            screen, self.center_card,
+            (cx + CARD_WIDTH // 2, cy + CARD_HEIGHT // 2), (0, -150), -14, e)
+        if self.mode == "local":
+            offsets = [(-330, 130), (330, 130)]
+            angles = [12, -12]
+        else:
+            offsets = [(0, 170)]
+            angles = [14]
+        for idx, (ox, oy) in enumerate(offsets):
+            if idx < len(self.players) and self.players[idx].hand:
+                px, pyy = self.player_positions[idx]
+                self._blit_intro_card(
+                    screen, self.players[idx].hand[0],
+                    (px + CARD_WIDTH // 2, pyy + CARD_HEIGHT // 2),
+                    (ox, oy), angles[idx], e)
+
+    def _scaled_text(self, text, base_size, scale, color, alpha=255):
+        surf = load_font(base_size).render(text, True, color)
+        if surf.get_width() == 0 or surf.get_height() == 0:
+            return surf
+        w = max(1, int(surf.get_width() * scale))
+        h = max(1, int(surf.get_height() * scale))
+        if (w, h) != (surf.get_width(), surf.get_height()):
+            surf = pygame.transform.smoothscale(surf, (w, h))
+        if alpha < 255:
+            surf.set_alpha(alpha)
+        return surf
+
+    def _draw_intro_effects(self, screen):
+        t = self.intro_t
+        cx, cy = self.center_card_pos
+        center = (cx + CARD_WIDTH // 2, cy + CARD_HEIGHT // 2)
+        anchor_y = cy + CARD_HEIGHT + 40
+        overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        if t * 1000 < INTRO_GO_MS:
+            idx = min(2, int(t * 1000 / INTRO_NUMBER_MS))
+            label = ("3", "2", "1")[idx]
+            local = (t * 1000 - idx * INTRO_NUMBER_MS) / INTRO_NUMBER_MS
+            appear = min(1.0, local * 4.0)
+            scale = 1.0 + 0.6 * (1.0 - self._ease_out_cubic(appear))
+            alpha = 255
+            if local > 0.45:
+                alpha = int(255 * max(0.0, 1.0 - (local - 0.45) / 0.25))
+            txt = self._scaled_text(label, 130, scale, ACCENT_PRIMARY, alpha)
+            overlay.blit(txt, txt.get_rect(center=(center[0], anchor_y)))
+        else:
+            ring_t = min(1.0, (t * 1000 - INTRO_GO_MS) / 700.0)
+            max_r = CARD_WIDTH // 2 + 60
+            for rt, color in [(ring_t, ACCENT_PRIMARY),
+                              (max(0.0, ring_t - 0.3), ACCENT_SUCCESS)]:
+                if rt > 0:
+                    radius = int(30 + (max_r - 30) * self._ease_out_cubic(rt))
+                    alpha = int(230 * (1.0 - rt))
+                    pygame.draw.circle(overlay, (*color, alpha), center, radius, 4)
+            go = (t * 1000 - INTRO_GO_MS) / INTRO_ENTRY_MS
+            appear = min(1.0, go * 2.2)
+            scale = 0.6 + 0.5 * self._ease_out_back(appear)
+            alpha = 255
+            if go > 0.62:
+                alpha = int(255 * max(0.0, 1.0 - (go - 0.62) / 0.08))
+            txt = self._scaled_text("¡YA!", 120, scale, ACCENT_SUCCESS, alpha)
+            overlay.blit(txt, txt.get_rect(center=(center[0], anchor_y)))
+        screen.blit(overlay, (0, 0))
+
     def _draw_timer(self, screen):
-        if self.config["time_limit"] <= 0 or self.time_left <= 0:
+        if self.intro or self.config["time_limit"] <= 0 or self.time_left <= 0:
             return
         seconds = int(self.time_left)
         text = f"{seconds // 60:02d}:{seconds % 60:02d}"

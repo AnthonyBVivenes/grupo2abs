@@ -196,6 +196,12 @@ class Card:
         # Guardar posiciones de símbolos RELATIVAS a la esquina superior-izquierda de la carta
         self._symbol_positions = [(cx - x, cy - y, sym) for (cx, cy), sym in zip(positions, self.symbols)]
 
+    def to_surface(self):
+        """Dibuja la carta en una surface aparte para luego escalarla/rotarla."""
+        surf = pygame.Surface((CARD_WIDTH, CARD_HEIGHT), pygame.SRCALPHA)
+        self.draw(surf, 0, 0)
+        return surf
+
     def get_symbol_at_pos(self, mouse_x, mouse_y):
         """Devuelve (symbol_id, index) si el click está sobre un símbolo, sino None."""
         for cx, cy, sym in self._symbol_positions:
