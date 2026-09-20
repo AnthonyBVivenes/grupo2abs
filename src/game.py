@@ -9,6 +9,7 @@ from config import Config, DEFAULT_CONFIG, normalize_key
 from deck import Deck
 from fonts import load_font
 from player import Player
+from sound import SoundManager
 
 
 P1_KEYS = list(DEFAULT_CONFIG["p1_keys"])
@@ -37,6 +38,8 @@ class Game:
         pygame.display.set_caption("Dobble")
         self.clock = pygame.time.Clock()
         self.running = True
+        self.sound = SoundManager()
+        self.sound.play_music("lobby")
         if self.config["fullscreen"]:
             self._apply_fullscreen()
 
@@ -134,6 +137,8 @@ class Game:
         self.player_positions = [(0, 0) for _ in self.players]
         self.lock_until = 0
         self.state = "PLAYING"
+        self.sound.play_effect("start")
+        self.sound.play_music("game")
 
     def _names(self):
         names = list(self.config["player_names"])
@@ -232,11 +237,16 @@ class Game:
             elif key == pygame.K_ESCAPE:
                 self.running = False
         elif key == pygame.K_ESCAPE:
-            self.state = "MENU"
+            self._go_to_menu()
         elif key == pygame.K_r and self.game_over:
             self._restart_game()
         elif self.state == "PLAYING" and self.mode == "local" and not self.game_over:
             self._handle_local_input(pygame.key.name(key))
+
+    def _go_to_menu(self):
+        self.state = "MENU"
+        self.sound.stop_music()
+        self.sound.play_music("lobby")
 
     def _handle_settings_key(self, key):
         rows = self.settings_rows
@@ -293,7 +303,7 @@ class Game:
                 self._keys_backup = list(self.config[row["key"]])
                 self.config[row["key"]] = list(self.config[row["key"]])
         elif key == pygame.K_ESCAPE:
-            self.state = "MENU"
+            self._go_to_menu()
 
     def _other_player_keys(self, key_name):
         other = "p2_keys" if key_name == "p1_keys" else "p1_keys"
@@ -470,6 +480,7 @@ class Game:
     def _on_correct(self, player, card, index=0, pos=(0, 0)):
         player.score += 1
         player.correct += 1
+        self.sound.play_effect("coincidence")
         self._add_feedback("correct", pos)
         player.remove_card(card)
         next_center = self.deck.draw_card()
@@ -495,6 +506,7 @@ class Game:
             player.incorrect += 1
             if penalty == "strong" and player.score > 0:
                 player.score -= 1
+        self.sound.play_effect("error")
         self._add_feedback("incorrect", pos)
         if self.config["hint_on_error"]:
             card = player.hand[0]
@@ -517,6 +529,8 @@ class Game:
         self.message = "FIN DE PARTIDA"
         self.message_color = ACCENT_WARNING
         self.message_end = pygame.time.get_ticks() + 60000
+        self.sound.stop_music()
+        self.sound.play_effect("game_over")
 
     def show_message(self, text, color):
         self.message = text
