@@ -43,6 +43,7 @@ class Game:
             self._apply_fullscreen()
 
         self.state = "MENU"
+        self.mode = "single"
         self.menu_index = 0
         self.menu_rects = []
         self.menu_msg = ""
