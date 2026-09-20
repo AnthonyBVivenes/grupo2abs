@@ -69,6 +69,10 @@ class Game:
         self.editing_step = 0
         self.modal = None
         self.modal_btn_rects = []
+        self.game_over_rects = []
+        self._game_over_rects_local = []
+        self.game_over_start = 0
+        self._game_over_backdrop = None
         self._name_index = 0
         self._name_before = None
         self._keys_backup = None
@@ -133,6 +137,8 @@ class Game:
 
     def _reset_state(self):
         self.game_over = False
+        self.game_over_rects = []
+        self._game_over_backdrop = None
         self.message = ""
         self.message_color = TEXT_PRIMARY
         self.message_end = 0
@@ -259,6 +265,9 @@ class Game:
 
     def _go_to_menu(self):
         self.state = "MENU"
+        self.game_over = False
+        self.game_over_rects = []
+        self._game_over_backdrop = None
         self.sound.stop_music()
         self.sound.play_music("lobby")
 
@@ -496,6 +505,14 @@ class Game:
                     return
             return
         if self.game_over:
+            for action, rect in self.game_over_rects:
+                if rect.collidepoint(pos):
+                    self.sound.play_effect("select")
+                    if action == "restart":
+                        self._restart_game()
+                    else:
+                        self._go_to_menu()
+                    return
             return
         if self.intro:
             return
@@ -575,6 +592,9 @@ class Game:
 
     def _end_game(self):
         self.game_over = True
+        self.game_over_start = pygame.time.get_ticks()
+        self.game_over_rects = []
+        self._game_over_backdrop = None
         self.message = "FIN DE PARTIDA"
         self.message_color = ACCENT_WARNING
         self.message_end = pygame.time.get_ticks() + 60000
@@ -1273,10 +1293,55 @@ class Game:
         screen.blit(banner, banner.get_rect(center=(center_x, my)))
 
     def _draw_game_over(self, screen):
-        font = load_font(26)
-        label_font = load_font(20)
-        line_h = font.get_height() + 10
-        center_x = SCORE_PANEL_WIDTH + (self.w - SCORE_PANEL_WIDTH) // 2
+        now = pygame.time.get_ticks()
+        elapsed = (now - self.game_over_start) / 1000.0
+        enter = min(1.0, elapsed / 0.40)
+        panel_scale = 0.74 + 0.26 * self._ease_out_back(enter)
+
+        pw = min(760, self.w - 100)
+        ph = 470 if self.mode == "local" else 440
+        panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        panel_color = tuple(min(255, int(c * 1.08)) for c in BG_PANEL)
+        bounds = pygame.Rect(0, 0, pw, ph)
+        pygame.draw.rect(panel, panel_color, bounds, border_radius=18)
+        pygame.draw.rect(panel, ACCENT_PRIMARY, bounds, 3, border_radius=18)
+
+        mx, my = pygame.mouse.get_pos()
+        panel_mouse = ((mx - self.w // 2) / panel_scale + pw / 2,
+                       (my - self.h // 2) / panel_scale + ph / 2)
+
+        self._game_over_rects_local = []
+        self._fill_game_over_panel(panel, elapsed, pw, ph, panel_mouse)
+
+        if self._game_over_backdrop is None:
+            self._game_over_backdrop = self._blur_backdrop(screen.copy())
+        screen.blit(self._game_over_backdrop, (0, 0))
+
+        sw = max(1, int(pw * panel_scale))
+        sh = max(1, int(ph * panel_scale))
+        if (sw, sh) == (pw, ph):
+            shown = panel
+        else:
+            shown = pygame.transform.smoothscale(panel, (sw, sh))
+        shown_rect = shown.get_rect(center=(self.w // 2, self.h // 2))
+        screen.blit(shown, shown_rect)
+
+        self.game_over_rects = [
+            (action, pygame.Rect(shown_rect.left + int(r.x * panel_scale),
+                                 shown_rect.top + int(r.y * panel_scale),
+                                 max(1, int(r.w * panel_scale)),
+                                 max(1, int(r.h * panel_scale))))
+            for action, r in self._game_over_rects_local
+        ]
+
+    def _fill_game_over_panel(self, panel, elapsed, pw, ph, panel_mouse):
+        title_font = load_font(34)
+        big_font = load_font(60)
+        name_font = load_font(24)
+        value_font = load_font(30)
+        small_font = load_font(16)
+        cx = pw // 2
+        count = self._ease_out_cubic(min(1.0, elapsed / 0.8))
 
         if self.mode == "local":
             max_score = max(p.score for p in self.players)
@@ -1286,42 +1351,97 @@ class Game:
             if len(winners) == 1:
                 title = f"GANADOR: {winners[0].name}"
                 title_color = winners[0].color
+                winner = winners[0]
             else:
                 title = "EMPATE"
                 title_color = ACCENT_WARNING
+                winner = None
 
-            lines = [f"{p.name}: {p.score} pts  (C:{p.correct}  F:{p.incorrect})"
-                     for p in self.players]
-            start_y = self.h // 2 - (line_h * (len(lines) + 1)) // 2
+            rendered = self._fit_scaled(title_font.render(title, True, title_color),
+                                        self._breath_scale(0.02, 1.6))
+            panel.blit(rendered, rendered.get_rect(center=(cx, 58)))
+            self._panel_separator(panel, cx, 100, pw)
 
-            rendered = font.render(title, True, title_color)
-            screen.blit(rendered, rendered.get_rect(center=(center_x, start_y)))
-            for i, line in enumerate(lines):
-                text = label_font.render(line, True, TEXT_PRIMARY)
-                rect = text.get_rect(center=(center_x, start_y + (i + 1) * line_h))
-                screen.blit(text, rect)
+            for i, player in enumerate(self.players):
+                row_y = 178 + i * 96
+                is_winner = player is winner
+                row = pygame.Rect(46, row_y - 40, pw - 92, 80)
+                if is_winner:
+                    highlight = tuple(min(255, int(c * 1.14)) for c in BG_PANEL)
+                    pygame.draw.rect(panel, highlight, row, border_radius=12)
+                    pygame.draw.rect(panel, ACCENT_PRIMARY, row, 2, border_radius=12)
+                dot_x = row.x + 34
+                pygame.draw.circle(panel, player.color, (dot_x, row_y), 13)
+                name_color = player.color if is_winner else TEXT_SECONDARY
+                name = player.name or f"Jugador {i + 1}"
+                name_s = name_font.render(name, True, name_color)
+                panel.blit(name_s, name_s.get_rect(midleft=(dot_x + 26, row_y - 12)))
+                detail = small_font.render(
+                    f"Correctas {player.correct}   Fallos {player.incorrect}",
+                    True, TEXT_MUTED)
+                panel.blit(detail, detail.get_rect(midleft=(dot_x + 26, row_y + 16)))
+                pts = value_font.render(f"{int(player.score * count)} pts",
+                                        True, ACCENT_PRIMARY)
+                panel.blit(pts, pts.get_rect(midright=(row.right - 24, row_y + 8)))
+                if is_winner:
+                    tag = small_font.render("GANADOR", True, ACCENT_PRIMARY)
+                    panel.blit(tag, tag.get_rect(midright=(row.right - 24, row_y - 24)))
 
-            hint_y = start_y + (len(lines) + 1) * line_h + 10
-            hint = label_font.render("R: reiniciar   Esc: menu", True, TEXT_MUTED)
-            screen.blit(hint, hint.get_rect(center=(center_x, hint_y)))
+            self._game_over_buttons(panel, pw, ph, panel_mouse)
             return
 
         player = self.players[0]
         total = player.correct + player.incorrect
         precision = (player.correct / total * 100) if total else 0.0
-        lines = [
-            "FIN DE PARTIDA",
-            f"Puntos: {player.score}",
-            f"Correctas: {player.correct}",
-            f"Fallos: {player.incorrect}",
-            f"Precision: {precision:.1f}%",
-            "R: reiniciar   Esc: menu",
+
+        title = self._fit_scaled(
+            title_font.render("FIN DE PARTIDA", True, ACCENT_PRIMARY),
+            self._breath_scale(0.02, 1.8))
+        panel.blit(title, title.get_rect(center=(cx, 58)))
+        self._panel_separator(panel, cx, 100, pw)
+
+        big = big_font.render(str(int(player.score * count)), True, ACCENT_PRIMARY)
+        panel.blit(big, big.get_rect(center=(cx, 172)))
+        label = small_font.render("PUNTOS", True, TEXT_MUTED)
+        panel.blit(label, label.get_rect(center=(cx, 216)))
+
+        stats = [
+            ("CORRECTAS", int(player.correct * count), ACCENT_SUCCESS),
+            ("FALLOS", int(player.incorrect * count), ACCENT_ERROR),
+            ("PRECISION", f"{precision * count:.1f}%", TEXT_PRIMARY),
         ]
-        start_y = self.h // 2 - (line_h * len(lines)) // 2
-        for i, line in enumerate(lines):
-            color = TEXT_PRIMARY
-            if i == 0:
-                color = ACCENT_PRIMARY
-            rendered = font.render(line, True, color)
-            rect = rendered.get_rect(center=(center_x, start_y + i * line_h))
-            screen.blit(rendered, rect)
+        for i, (text, value, color) in enumerate(stats):
+            sx = int(pw * (0.28 + 0.22 * i))
+            shown = value if isinstance(value, str) else str(value)
+            v = value_font.render(shown, True, color)
+            panel.blit(v, v.get_rect(center=(sx, 292)))
+            t = small_font.render(text, True, TEXT_MUTED)
+            panel.blit(t, t.get_rect(center=(sx, 328)))
+
+        self._game_over_buttons(panel, pw, ph, panel_mouse)
+
+    def _panel_separator(self, panel, cx, y, pw):
+        pad = 60
+        pygame.draw.line(panel, ACCENT_PRIMARY, (pad, y), (pw - pad, y), 1)
+
+    def _game_over_buttons(self, panel, pw, ph, panel_mouse):
+        btn_w, btn_h, gap = 210, 46, 26
+        total_w = btn_w * 2 + gap
+        left = (pw - total_w) // 2
+        y = ph - 64
+        options = [
+            ("Reiniciar [R]", ACCENT_SUCCESS, "restart"),
+            ("Menu [Esc]", ACCENT_PRIMARY, "menu"),
+        ]
+        for i, (label, color, action) in enumerate(options):
+            rect = pygame.Rect(left + i * (btn_w + gap), y, btn_w, btn_h)
+            hovered = rect.collidepoint(panel_mouse)
+            base = tuple(min(255, int(c * 1.25)) for c in BG_SECONDARY)
+            pygame.draw.rect(panel, base if hovered else BG_SECONDARY, rect,
+                             border_radius=10)
+            pygame.draw.rect(panel, color, rect, 3 if hovered else 2,
+                             border_radius=10)
+            _, text = self._render_fitting_text(label, [22, 20, 18, 16],
+                                                btn_w - 16, TEXT_PRIMARY)
+            panel.blit(text, text.get_rect(center=rect.center))
+            self._game_over_rects_local.append((action, rect.copy()))
