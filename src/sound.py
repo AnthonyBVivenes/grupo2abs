@@ -150,3 +150,15 @@ class SoundManager:
         pygame.mixer.music.stop()
         self._music = None
         self._paused = False
+
+    def set_music_volume(self, volume):
+        self.music_volume = max(0.0, min(1.0, volume))
+        if self.enabled:
+            pygame.mixer.music.set_volume(self.music_volume)
+            self._fade_vol = self.music_volume
+
+    def set_effect_volume(self, volume):
+        volume = max(0.0, min(1.0, volume))
+        if self.enabled:
+            for sound in self._effects.values():
+                sound.set_volume(volume)

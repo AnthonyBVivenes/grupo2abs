@@ -1,6 +1,6 @@
 {
   "time_limit": 30,
-  "card_scale": "large",
+  "card_scale": "normal",
   "hint_on_error": true,
   "miss_penalty": "light",
   "player_names": [
@@ -30,5 +30,9 @@
     "3"
   ],
   "remote_ip": "127.0.0.1",
-  "remote_port": 7777
+  "remote_port": 7777,
+  "music_volume": 1.0,
+  "effect_volume": 0.6,
+  "music_muted": false,
+  "effects_muted": false
 }

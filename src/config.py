@@ -16,6 +16,10 @@ DEFAULT_CONFIG = {
     "p2_keys": ["1", "2", "3", "4", "5", "6", "7", "8"],
     "remote_ip": "127.0.0.1",
     "remote_port": 7777,
+    "music_volume": 0.5,
+    "effect_volume": 0.7,
+    "music_muted": False,
+    "effects_muted": False,
 }
 
 
