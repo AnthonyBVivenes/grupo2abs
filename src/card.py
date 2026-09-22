@@ -9,12 +9,17 @@ from constants import (
     RED, ACCENT_SUCCESS, ACCENT_ERROR, ACCENT_INFO, ACCENT_WARNING,
     HIGHLIGHT, PALE_YELLOW
 )
+from fonts import load_font
 
 class Card:
     # --- Cachés y estado compartido (clase, no instancia) ---
     _sprite_cache = {}      # {symbol_id: pygame.Surface} - sprites ya escalados
     _card_base = None       # pygame.Surface - imagen base de la carta escalada
     _symbol_map = None      # dict - mapeo symbol_id -> nombre_archivo.png
+    # Tamaño de render de la carta (se puede cambiar en tiempo de ejecución
+    # para adaptarse al tamaño de la ventana; mantiene la proporción 640:750).
+    _card_w = CARD_WIDTH
+    _card_h = CARD_HEIGHT
     _layout_params = {      # Parámetros de layout mutables para editor visual (en píxeles de RENDER)
         'offset_x': 20,     # Margen izquierdo desde borde carta
         'offset_y': 20,     # Margen superior desde borde carta
@@ -33,6 +38,23 @@ class Card:
         cls._layout_params.update(kwargs)
 
     @classmethod
+    def card_w(cls):
+        return cls._card_w
+
+    @classmethod
+    def card_h(cls):
+        return cls._card_h
+
+    @classmethod
+    def symbol_size(cls):
+        return cls._layout_params['symbol_size']
+
+    @classmethod
+    def set_card_size(cls, w, h):
+        cls._card_w = max(48, int(w))
+        cls._card_h = max(56, int(h))
+
+    @classmethod
     def reset_layout(cls):
         """Restaura valores por defecto del layout."""
         cls._layout_params = {
@@ -41,6 +63,8 @@ class Card:
             'spacing': None,
             'symbol_size': 30,
         }
+        cls._card_w = CARD_WIDTH
+        cls._card_h = CARD_HEIGHT
 
     def __init__(self, card_id, symbols):
         """Inicializa una carta con su ID único y lista de 8 símbolos (ints 0-56)."""
@@ -55,16 +79,18 @@ class Card:
     def _calculate_positions(self, x, y):
         """Calcula las posiciones de los símbolos relativas a la esquina de la carta."""
         layout = self._layout_params
+        cw = self._card_w
+        ch = self._card_h
         spacing = layout['spacing'] if layout['spacing'] is not None else \
-                  CARD_WIDTH // 4
+                  cw // 4
         offset_x = layout['offset_x']
         offset_y = layout['offset_y']
         symbol_size = layout['symbol_size']
         
         row_spacing = symbol_size + 10
         
-        card_center_x = x + CARD_WIDTH // 2
-        card_center_y = y + CARD_HEIGHT // 2
+        card_center_x = x + cw // 2
+        card_center_y = y + ch // 2
         
         positions = [
             (card_center_x - spacing, card_center_y - row_spacing),
@@ -124,14 +150,16 @@ class Card:
 
     def draw(self, surface, x, y, debug=False):
         """Dibuja la carta completa en la surface dada en posición (x, y)."""
+        cw, ch = self._card_w, self._card_h
+
         # 1. Rectángulo base de la carta (para colisiones y fondo)
-        rect = pygame.Rect(x, y, CARD_WIDTH, CARD_HEIGHT)
+        rect = pygame.Rect(x, y, cw, ch)
 
         # 2. Fondo: imagen base si existe, sino rectángulo blanco
         # Escalar la base de carta en tiempo de render (assets HD -> render size)
         card_base = self.get_card_base()
         if card_base:
-            scaled_base = pygame.transform.scale(card_base, (CARD_WIDTH, CARD_HEIGHT))
+            scaled_base = pygame.transform.scale(card_base, (cw, ch))
             surface.blit(scaled_base, (x, y))
         else:
             pygame.draw.rect(surface, WHITE, rect)
@@ -145,7 +173,7 @@ class Card:
         # 6. Calcular layout 3-2-3 centrado verticalmente en la carta
         layout = self._layout_params
         spacing = layout['spacing'] if layout['spacing'] is not None else \
-                  CARD_WIDTH // 4
+                  cw // 4
         offset_x = layout['offset_x']
         symbol_size = layout['symbol_size']
         
@@ -153,8 +181,8 @@ class Card:
         row_spacing = symbol_size + 10
         
         # Centrar el bloque de 3 filas verticalmente en la carta
-        card_center_x = x + CARD_WIDTH // 2
-        card_center_y = y + CARD_HEIGHT // 2
+        card_center_x = x + cw // 2
+        card_center_y = y + ch // 2
         
         positions = [
             (card_center_x - spacing, card_center_y - row_spacing),
@@ -195,6 +223,12 @@ class Card:
         # Guardar posiciones de símbolos RELATIVAS a la esquina superior-izquierda de la carta
         self._symbol_positions = [(cx - x, cy - y, sym) for (cx, cy), sym in zip(positions, self.symbols)]
 
+    def to_surface(self):
+        """Dibuja la carta en una surface aparte para luego escalarla/rotarla."""
+        surf = pygame.Surface((self._card_w, self._card_h), pygame.SRCALPHA)
+        self.draw(surf, 0, 0)
+        return surf
+
     def get_symbol_at_pos(self, mouse_x, mouse_y):
         """Devuelve (symbol_id, index) si el click está sobre un símbolo, sino None."""
         for cx, cy, sym in self._symbol_positions:
@@ -212,7 +246,7 @@ class Card:
 
     def _draw_key_label(self, surface, cx, cy, label, symbol_size):
         """Dibuja la etiqueta de tecla encima del símbolo."""
-        font = pygame.font.Font(None, max(18, symbol_size // 2))
+        font = load_font(max(14, symbol_size // 3))
         text = font.render(label.upper(), True, (255, 255, 255))
         # Fondo semitransparente para legibilidad
         bg_rect = text.get_rect(center=(cx, cy - symbol_size // 2 - 8))
@@ -222,10 +256,11 @@ class Card:
     def _draw_debug(self, surface, x, y, offset_x, offset_y_unused, spacing, symbol_size):
         """Dibuja overlay de depuración: grid, IDs, coords, cruz central, info."""
         line_color = RED  # Rojo para líneas de grid
+        cw, ch = self._card_w, self._card_h
 
         # --- Layout 3-2-3 centrado: recalcular posiciones igual que en draw() ---
-        card_center_x = x + CARD_WIDTH // 2
-        card_center_y = y + CARD_HEIGHT // 2
+        card_center_x = x + cw // 2
+        card_center_y = y + ch // 2
         row_spacing = symbol_size + 10
         
         positions = [
@@ -243,16 +278,16 @@ class Card:
         # Líneas horizontales (centro de cada fila ± symbol_size/2)
         for row_offset in [-row_spacing, 0, row_spacing]:
             gy = card_center_y + row_offset - symbol_size // 2
-            pygame.draw.line(surface, line_color, (x, gy), (x + CARD_WIDTH, gy), 1)
+            pygame.draw.line(surface, line_color, (x, gy), (x + cw, gy), 1)
         
         # Líneas verticales guía (centro y ±spacing)
         for col_offset in [-spacing, 0, spacing]:
             gx = card_center_x + col_offset - symbol_size // 2
-            pygame.draw.line(surface, line_color, (gx, y), (gx, y + CARD_HEIGHT), 1)
+            pygame.draw.line(surface, line_color, (gx, y), (gx, y + ch), 1)
 
         # --- Cruz central verde éxito (centro geométrico de la carta) ---
-        cx_center = x + CARD_WIDTH // 2
-        cy_center = y + CARD_HEIGHT // 2
+        cx_center = x + cw // 2
+        cy_center = y + ch // 2
         pygame.draw.line(surface, ACCENT_SUCCESS, (cx_center - 10, cy_center), (cx_center + 10, cy_center), 2)
         pygame.draw.line(surface, ACCENT_SUCCESS, (cx_center, cy_center - 10), (cx_center, cy_center + 10), 2)
 
@@ -277,7 +312,7 @@ class Card:
             surface.blit(row_text, (cx - 20, cy + symbol_size//2 + 2))
 
         # --- Borde exterior info + info de parámetros de layout ---
-        pygame.draw.rect(surface, ACCENT_INFO, (x, y, CARD_WIDTH, CARD_HEIGHT), 2)
+        pygame.draw.rect(surface, ACCENT_INFO, (x, y, cw, ch), 2)
         margin_font = pygame.font.Font(None, 14)
         margin_text = margin_font.render(
             f"offset_x:{offset_x} spacing:{spacing} symbol_size:{symbol_size} layout:3-2-3",
