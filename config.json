@@ -1,5 +1,5 @@
 {
-  "time_limit": 30,
+  "time_limit": 60,
   "card_scale": "normal",
   "hint_on_error": true,
   "miss_penalty": "light",
@@ -8,7 +8,7 @@
     "Jugador 2"
   ],
   "fullscreen": false,
-  "input_lock_ms": 300,
+  "input_lock_ms": 150,
   "p1_keys": [
     "Q",
     "W",
@@ -31,8 +31,8 @@
   ],
   "remote_ip": "127.0.0.1",
   "remote_port": 7777,
-  "music_volume": 1.0,
-  "effect_volume": 0.6,
-  "music_muted": true,
-  "effects_muted": true
+  "music_volume": 0.4,
+  "effect_volume": 0.2,
+  "music_muted": false,
+  "effects_muted": false
 }
