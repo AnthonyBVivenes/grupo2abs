@@ -360,8 +360,23 @@ class Game:
                 pass
             elif mtype == "DISCONNECT":
                 self._net_abort("El oponente se desconecto")
+            elif mtype == "READY" and self.remote_role == "host":
+                self._on_guest_ready()
             elif mtype == "ACK":
                 pass  # ACK genérico, ya manejado en net.py
+
+
+    def _on_guest_ready(self):
+        """Host recibe READY del guest -> arranca la partida."""
+        if self.remote_sub != "HOST_WAIT_READY":
+            return
+        guest_name = "Jugador 2"
+        # Recuperar el nombre HELLO 
+        if getattr(self, "_pending_guest_name", None):
+            guest_name = self._pending_guest_name
+        self._start_remote_game(guest_name)
+        self.remote_sub = "HOST_INGAME"
+        print("[DEBUG host] READY received, game started")
 
     def _poll_remote(self):
         if self.remote is None:
@@ -393,20 +408,21 @@ class Game:
             self._show_remote_msg(reason)
 
     def _send_welcome(self, hello_msg):
-        """Host responde a HELLO con WELCOME (incluye session_id)."""
         guest_name = str(hello_msg.payload.get("name") or "Jugador 2")
+        self._pending_guest_name = guest_name      # ← guardar para después
         self.remote.send("WELCOME", {
             "session_id": self.remote.session_id,
             "guest_name": guest_name,
-        }, require_ack=True)
-        self.remote_sub = "HOST_WAIT_WELCOME_ACK"
-        print("[DEBUG host] WELCOME sent")
+        }, require_ack=False)                        # ← ya no necesitamos ACK aquí
+        self.remote_sub = "HOST_WAIT_READY"          # ← esperamos READY
+        print("[DEBUG host] WELCOME sent, waiting READY")
 
     def _on_welcome(self, msg):
-        """Guest recibe WELCOME, guarda session_id y espera GAME_START."""
+        """Guest recibe WELCOME, guarda session_id y confirma con READY."""
         self.remote.session_id = msg.payload.get("session_id")
+        self.remote.send("READY", {"name": self._names()[0]}, require_ack=False)
         self.remote_sub = "GUEST_WAIT_START"
-        print("[DEBUG guest] WELCOME received, waiting GAME_START")
+        print("[DEBUG guest] WELCOME received, READY sent, waiting GAME_START")
 
     def _on_game_start_ack(self):
         """Host recibe ACK del GAME_START, inicia el juego."""
@@ -438,7 +454,7 @@ class Game:
         self.state = "PLAYING"
         # Enviar GAME_START con estado inicial
         self.remote.send("GAME_START", self._build_state_payload(), require_ack=True)
-        self.remote_sub = "HOST_WAIT_START_ACK"
+        self.remote_sub = "HOST_INGAME"
         print("[DEBUG host] GAME_START sent")
 
     def _on_game_start(self, msg):
@@ -2066,7 +2082,7 @@ class Game:
                     tag = small_font.render("GANADOR", True, GOLD)
                     panel.blit(tag, tag.get_rect(midright=(row.right - 24, row_y - 24)))
 
-            self._game_over_buttons(panel, pw, ph, panel_mouse)
+            #self._game_over_buttons(panel, pw, ph, panel_mouse)
             return
 
         player = self.players[0]
