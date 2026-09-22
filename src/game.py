@@ -336,38 +336,50 @@ class Game:
 
     def _handle_remote_msgs(self, msgs):
         for msg in msgs:
-            mtype = msg.get("type")
+            mtype = msg.type
             print(f"[DEBUG {self.remote_role}] handling {mtype}")
             if mtype == "HELLO" and self.remote_role == "host":
-                self._start_remote_game(str(msg.get("name") or "Jugador 2"))
+                self._send_welcome(msg)
+            elif mtype == "WELCOME" and self.remote_role == "guest":
+                self._on_welcome(msg)
+            elif mtype == "GAME_START" and self.remote_role == "guest":
+                self._on_game_start(msg)
+            elif mtype == "GAME_START_ACK" and self.remote_role == "host":
+                self._on_game_start_ack()
             elif mtype == "CLAIM" and self.remote_role == "host":
                 self._handle_remote_claim(msg)
-            elif mtype == "STATE":
+            elif mtype == "CLAIM_ACK" and self.remote_role == "guest":
+                pass  # Confirmación recibida
+            elif mtype == "STATE" and self.remote_role == "guest":
                 self._apply_remote_state(msg)
-            elif mtype == "GAME_OVER":
+            elif mtype == "STATE_ACK" and self.remote_role == "host":
+                pass  # Confirmación recibida
+            elif mtype == "GAME_OVER" and self.remote_role == "guest":
                 self._apply_remote_game_over(msg)
+            elif mtype == "GAME_OVER_ACK" and self.remote_role == "host":
+                pass
             elif mtype == "DISCONNECT":
                 self._net_abort("El oponente se desconecto")
+            elif mtype == "ACK":
+                pass  # ACK genérico, ya manejado en net.py
 
     def _poll_remote(self):
         if self.remote is None:
             return
         if self.remote_role == "guest":
             if self.remote.connected() and self.remote_sub == "GUEST_WAIT":
-                self.remote.send({"type": "HELLO", "name": self._names()[0]})
-                self.remote_sub = "GUEST_INGAME"
+                self.remote.send("HELLO", {"name": self._names()[0]}, require_ack=True)
+                self.remote_sub = "GUEST_WAIT_WELCOME"
                 print("[DEBUG guest] HELLO sent")
-            elif self.remote.connected() and self.remote_sub == "GUEST_INGAME":
-                print("[DEBUG guest] GUEST_INGAME, polling...")
         elif self.remote_role == "host":
             if (self.remote.connected()
                     and self.remote_sub == "HOST_WAIT"):
-                self.remote_sub = "HOST_INGAME"
+                self.remote_sub = "HOST_WAIT_HELLO"
                 print("[DEBUG host] peer connected, waiting HELLO")
         if self.remote.connected():
             msgs = self.remote.poll()
             if msgs:
-                print(f"[DEBUG {self.remote_role}] received {len(msgs)} msg(s): {[m.get('type') for m in msgs]}")
+                print(f"[DEBUG {self.remote_role}] received {len(msgs)} msg(s): {[m.type for m in msgs]}")
             self._handle_remote_msgs(msgs)
 
     def _net_abort(self, reason):
@@ -380,7 +392,31 @@ class Game:
         else:
             self._show_remote_msg(reason)
 
+    def _send_welcome(self, hello_msg):
+        """Host responde a HELLO con WELCOME (incluye session_id)."""
+        guest_name = str(hello_msg.payload.get("name") or "Jugador 2")
+        self.remote.send("WELCOME", {
+            "session_id": self.remote.session_id,
+            "guest_name": guest_name,
+        }, require_ack=True)
+        self.remote_sub = "HOST_WAIT_WELCOME_ACK"
+        print("[DEBUG host] WELCOME sent")
+
+    def _on_welcome(self, msg):
+        """Guest recibe WELCOME, guarda session_id y espera GAME_START."""
+        self.remote.session_id = msg.payload.get("session_id")
+        self.remote_sub = "GUEST_WAIT_START"
+        print("[DEBUG guest] WELCOME received, waiting GAME_START")
+
+    def _on_game_start_ack(self):
+        """Host recibe ACK del GAME_START, inicia el juego."""
+        if self.remote_sub == "HOST_WAIT_START_ACK":
+            self._start_remote_game(self.remote_player.name if self.remote_player else "Jugador 2")
+            self.remote_sub = "HOST_INGAME"
+            print("[DEBUG host] GAME_START_ACK received, game started")
+
     def _start_remote_game(self, guest_name):
+        """Inicializa el juego en el host y envía GAME_START al guest."""
         self.mode = "remote"
         self.remote_role = "host"
         self.remote_round = 0
@@ -400,40 +436,70 @@ class Game:
                 player.add_card(card)
         self._reset_state()
         self.state = "PLAYING"
-        self._send_remote_state()
+        # Enviar GAME_START con estado inicial
+        self.remote.send("GAME_START", self._build_state_payload(), require_ack=True)
+        self.remote_sub = "HOST_WAIT_START_ACK"
+        print("[DEBUG host] GAME_START sent")
+
+    def _on_game_start(self, msg):
+        """Guest recibe GAME_START, inicializa su estado y responde ACK."""
+        payload = msg.payload
+        self.remote_round = int(payload.get("round", 0))
+        self.center_card = Card(0, list(payload.get("center") or []))
+        hand = payload.get("hand") or []
+        player = Player(payload.get("you") or "Jugador 1", is_human=True)
+        player.color = PLAYER1_COLOR
+        player.hand = [Card(0, list(hand))] if hand else []
+        player.score = int(payload.get("you_score", 0))
+        player.correct = int(payload.get("you_correct", 0))
+        player.incorrect = int(payload.get("you_incorrect", 0))
+        self.players = [player]
+        self.remote_opponent = payload.get("host") or ""
+        self.remote_opp_score = int(payload.get("host_score", 0))
+        self.remote_opp_correct = int(payload.get("host_correct", 0))
+        self.remote_opp_incorrect = int(payload.get("host_incorrect", 0))
+        self.remote_remaining = int(payload.get("remaining", 0))
+        self.mode = "remote"
+        self.remote_role = "guest"
+        self._reset_state()
+        self.state = "PLAYING"
+        self._apply_card_scale()
+        print("[DEBUG guest] GAME_START received, game started")
+
+    def _build_state_payload(self):
+        guest = self.remote_player
+        host_p = self.players[0]
+        return {
+            "round": self.remote_round,
+            "center": list(self.center_card.symbols) if self.center_card else [],
+            "hand": list(guest.hand[0].symbols) if guest and guest.hand else [],
+            "host": host_p.name,
+            "you": guest.name if guest else "",
+            "host_score": host_p.score,
+            "you_score": guest.score if guest else 0,
+            "host_correct": host_p.correct,
+            "host_incorrect": host_p.incorrect,
+            "you_correct": guest.correct if guest else 0,
+            "you_incorrect": guest.incorrect if guest else 0,
+            "remaining": self.deck.remaining(),
+            "time_limit": self.config["time_limit"],
+        }
 
     def _send_remote_state(self, feedback=None):
         if self.remote is None or self.remote_role != "host":
             return
-        guest = self.remote_player
-        host_p = self.players[0]
-        msg = {
-            "type": "STATE",
-            "round": self.remote_round,
-            "center": list(self.center_card.symbols),
-            "hand": list(guest.hand[0].symbols) if guest.hand else [],
-            "host": host_p.name,
-            "you": guest.name,
-            "host_score": host_p.score,
-            "you_score": guest.score,
-            "host_correct": host_p.correct,
-            "host_incorrect": host_p.incorrect,
-            "you_correct": guest.correct,
-            "you_incorrect": guest.incorrect,
-            "remaining": self.deck.remaining(),
-            "time_limit": self.config["time_limit"],
-        }
+        payload = self._build_state_payload()
         if feedback:
-            msg["feedback"] = feedback
-        self.remote.send(msg)
+            payload["feedback"] = feedback
+        self.remote.send("STATE", payload, require_ack=True)
 
     def _handle_remote_claim(self, msg):
         guest = self.remote_player
         if guest is None or not guest.hand or not self.center_card:
             return
-        if msg.get("round") != self.remote_round:
+        if msg.payload.get("round") != self.remote_round:
             return
-        sym = msg.get("symbol")
+        sym = msg.payload.get("symbol")
         if sym is None:
             return
         card = guest.hand[0]
@@ -445,33 +511,30 @@ class Game:
     def _apply_remote_state(self, msg):
         if self.remote_role != "guest":
             return
-        print(f"[DEBUG guest] _apply_remote_state: round={msg.get('round')}, center={len(msg.get('center', []))}, hand={len(msg.get('hand', []))}")
+        payload = msg.payload
+        print(f"[DEBUG guest] _apply_remote_state: round={payload.get('round')}, center={len(payload.get('center', []))}, hand={len(payload.get('hand', []))}")
         try:
-            self.remote_round = int(msg.get("round", 0))
-            self.center_card = Card(0, list(msg.get("center") or []))
-            hand = msg.get("hand") or []
-            player = self.players[0] if self.players else Player("", is_human=True)
-            if not self.players:
-                player.color = PLAYER1_COLOR
-                self.players = [player]
+            new_round = int(payload.get("round", 0))
+            # Solo actualizar si la ronda avanzó (evita duplicados)
+            if new_round < self.remote_round:
+                print(f"[DEBUG guest] Ignoring stale round {new_round} (current {self.remote_round})")
+                return
+            self.remote_round = new_round
+            self.center_card = Card(0, list(payload.get("center") or []))
+            hand = payload.get("hand") or []
+            player = self.players[0]
             player.hand = [Card(0, list(hand))] if hand else []
-            player.name = msg.get("you") or player.name
-            player.score = int(msg.get("you_score", 0))
-            player.correct = int(msg.get("you_correct", 0))
-            player.incorrect = int(msg.get("you_incorrect", 0))
-            self.remote_opponent = msg.get("host") or ""
-            self.remote_opp_score = int(msg.get("host_score", 0))
-            self.remote_opp_correct = int(msg.get("host_correct", 0))
-            self.remote_opp_incorrect = int(msg.get("host_incorrect", 0))
-            self.remote_remaining = int(msg.get("remaining", 0))
+            player.name = payload.get("you") or player.name
+            player.score = int(payload.get("you_score", 0))
+            player.correct = int(payload.get("you_correct", 0))
+            player.incorrect = int(payload.get("you_incorrect", 0))
+            self.remote_opponent = payload.get("host") or ""
+            self.remote_opp_score = int(payload.get("host_score", 0))
+            self.remote_opp_correct = int(payload.get("host_correct", 0))
+            self.remote_opp_incorrect = int(payload.get("host_incorrect", 0))
+            self.remote_remaining = int(payload.get("remaining", 0))
             print(f"[DEBUG guest] player hand={len(player.hand)}, center={len(self.center_card.symbols) if self.center_card else 0}")
-            if self.state != "PLAYING":
-                self.mode = "remote"
-                self.remote_role = "guest"
-                self._reset_state()
-                self.state = "PLAYING"
-                print("[DEBUG guest] _reset_state called, state=PLAYING")
-            feedback = msg.get("feedback")
+            feedback = payload.get("feedback")
             if feedback and feedback.get("kind") == "correct":
                 if feedback.get("who") == "you":
                     self.sound.play_effect("coincidence")
@@ -485,7 +548,6 @@ class Game:
             import traceback
             print(f"[DEBUG guest] EXCEPTION in _apply_remote_state: {e}")
             traceback.print_exc()
-            # Cerrar conexión para que host lo detecte
             if self.remote:
                 self.remote.close()
             raise
@@ -493,16 +555,17 @@ class Game:
     def _apply_remote_game_over(self, msg):
         if self.remote_role != "guest":
             return
-        self.remote_opponent = msg.get("host") or self.remote_opponent
-        self.remote_opp_score = int(msg.get("host_score", 0))
-        self.remote_opp_correct = int(msg.get("host_correct", 0))
-        self.remote_opp_incorrect = int(msg.get("host_incorrect", 0))
+        payload = msg.payload
+        self.remote_opponent = payload.get("host") or self.remote_opponent
+        self.remote_opp_score = int(payload.get("host_score", 0))
+        self.remote_opp_correct = int(payload.get("host_correct", 0))
+        self.remote_opp_incorrect = int(payload.get("host_incorrect", 0))
         self.remote_remaining = 0
-        self.remote_round = int(msg.get("round", self.remote_round))
+        self.remote_round = int(payload.get("round", self.remote_round))
         player = self.players[0]
-        player.score = int(msg.get("you_score", player.score))
-        player.correct = int(msg.get("you_correct", player.correct))
-        player.incorrect = int(msg.get("you_incorrect", player.incorrect))
+        player.score = int(payload.get("you_score", player.score))
+        player.correct = int(payload.get("you_correct", player.correct))
+        player.incorrect = int(payload.get("you_incorrect", player.incorrect))
         self._reset_state()
         self.state = "PLAYING"
         self.game_over = True
@@ -514,6 +577,8 @@ class Game:
         self.message_end = pygame.time.get_ticks() + 60000
         self.sound.stop_music()
         self.sound.play_effect("game_over")
+        # Enviar ACK al host
+        self.remote.send("GAME_OVER_ACK", {}, require_ack=False)
 
     def _guest_claim(self, sym, index, pos):
         if self.remote is None or not self.remote.connected():
@@ -523,8 +588,7 @@ class Game:
         if not correct:
             self.sound.play_effect("error")
             self.show_message("No coincide!", ACCENT_ERROR)
-        self.remote.send({"type": "CLAIM", "round": self.remote_round,
-                          "symbol": sym})
+        self.remote.send("CLAIM", {"round": self.remote_round, "symbol": sym}, require_ack=True)
 
     def _remote_opp_color(self):
         return PLAYER2_COLOR
@@ -1249,18 +1313,18 @@ class Game:
         if (self.remote_role == "host" and self.remote is not None
                 and not getattr(self, "_remote_game_over_sent", False)):
             self._remote_game_over_sent = True
-            self.remote.send({
-                "type": "GAME_OVER",
+            payload = {
                 "round": self.remote_round,
                 "host": self.players[0].name,
                 "host_score": self.players[0].score,
                 "host_correct": self.players[0].correct,
                 "host_incorrect": self.players[0].incorrect,
-                "you": self.remote_player.name,
-                "you_score": self.remote_player.score,
-                "you_correct": self.remote_player.correct,
-                "you_incorrect": self.remote_player.incorrect,
-            })
+                "you": self.remote_player.name if self.remote_player else "",
+                "you_score": self.remote_player.score if self.remote_player else 0,
+                "you_correct": self.remote_player.correct if self.remote_player else 0,
+                "you_incorrect": self.remote_player.incorrect if self.remote_player else 0,
+            }
+            self.remote.send("GAME_OVER", payload, require_ack=True)
 
     def show_message(self, text, color):
         self.message = text
